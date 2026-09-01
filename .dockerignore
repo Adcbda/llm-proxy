@@ -1,0 +1,12 @@
+.git
+.gitignore
+bin
+data
+ui/node_modules
+ui/test-results
+ui/playwright-report
+webui/dist
+*.db
+*.db-shm
+*.db-wal
+
