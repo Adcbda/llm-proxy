@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractMessages, modelList, parseSSEEvents, prettyBody } from "./lib";
+import { extractMessages, modelList, parseEmbeddedJSON, parseSSEEvents, prettyBody, textPreview } from "./lib";
 
 describe("inspector parsing", () => {
   it("extracts request and aggregated response messages without losing structured content", () => {
@@ -29,5 +29,17 @@ describe("inspector parsing", () => {
     expect(prettyBody(raw)).toContain("\n  \"object\"");
     expect(modelList(raw)).toEqual([{ id: "model-a", owned_by: "vendor" }]);
   });
-});
 
+  it("parses JSON embedded in tool arguments and keeps invalid text intact", () => {
+    expect(parseEmbeddedJSON('{"database":"Intel-RPL.db","limit":10}')).toEqual({
+      value: { database: "Intel-RPL.db", limit: 10 },
+      isJSON: true,
+    });
+    expect(parseEmbeddedJSON("plain tool output")).toEqual({ value: "plain tool output", isJSON: false });
+  });
+
+  it("creates a readable preview from HTML-heavy tool results", () => {
+    expect(textPreview("<table><tr><td>Raptor Lake</td></tr></table>\n\n## Design Guide"))
+      .toBe("Raptor Lake Design Guide");
+  });
+});

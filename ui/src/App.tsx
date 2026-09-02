@@ -8,7 +8,7 @@ import {
   Search, Settings, ShieldAlert, Trash2, Wrench, X,
 } from "lucide-react";
 import { api, type Project, type RequestDetail, type RequestFilters, type RequestSummary } from "./api";
-import { extractMessages, formatBytes, formatDuration, formatTime, modelList, parseJSON, parseSSEEvents, prettyBody, type InspectorMessage } from "./lib";
+import { extractMessages, formatBytes, formatDuration, formatTime, modelList, parseEmbeddedJSON, parseJSON, parseSSEEvents, prettyBody, textPreview, type InspectorMessage } from "./lib";
 import { Badge, Button, Dialog, Field, Input, Select, Spinner, Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui";
 
 const statusLabels: Record<string, string> = {
@@ -293,7 +293,7 @@ function RequestInspector({ detail, loading, error, onClose, onCopy }: { detail?
       {detail.error && <div className="detail-error"><AlertTriangle size={15} />{detail.error}</div>}
       <Tabs defaultValue="messages" className="detail-tabs">
         <TabsList className="tabs-list inspector-tabs"><TabsTrigger value="messages"><MessageSquare size={14} />消息</TabsTrigger><TabsTrigger value="raw"><FileJson size={14} />原始包</TabsTrigger><TabsTrigger value="sse"><Radio size={14} />SSE</TabsTrigger><TabsTrigger value="headers"><Network size={14} />Headers</TabsTrigger><TabsTrigger value="meta"><MoreHorizontal size={14} />元数据</TabsTrigger></TabsList>
-        <TabsContent value="messages" className="tab-content inspector-content"><MessagesView detail={detail} /></TabsContent>
+        <TabsContent value="messages" className="tab-content inspector-content"><MessagesView detail={detail} onCopy={onCopy} /></TabsContent>
         <TabsContent value="raw" className="tab-content inspector-content">
           <div className="code-toolbar"><div className="segmented"><button className={rawSide === "request" ? "active" : ""} onClick={() => setRawSide("request")}>Request</button><button className={rawSide === "response" ? "active" : ""} onClick={() => setRawSide("response")}>Response</button></div><div><Button variant="ghost" onClick={() => setWrap((value) => !value)}><Clipboard size={14} />{wrap ? "不换行" : "自动换行"}</Button><Button variant="ghost" onClick={() => onCopy(rawSide === "request" ? detail.requestBody : detail.responseBody)}><Copy size={14} />复制</Button></div></div>
           <pre className={`code-block ${wrap ? "wrap" : ""}`}>{prettyBody(rawSide === "request" ? detail.requestBody : detail.responseBody) || "（空响应体）"}</pre>
@@ -306,7 +306,7 @@ function RequestInspector({ detail, loading, error, onClose, onCopy }: { detail?
   </aside>;
 }
 
-function MessagesView({ detail }: { detail: RequestDetail }) {
+function MessagesView({ detail, onCopy }: { detail: RequestDetail; onCopy: (value: string, message?: string) => void }) {
   if (detail.path === "/v1/models") {
     const models = modelList(detail.responseBody);
     return <div className="models-view">{models.length ? models.map((model) => <div className="model-card" key={model.id}><div><Database size={16} /><strong>{model.id}</strong></div><span>{model.owned_by || "unknown owner"}</span></div>) : <div className="inline-empty">响应中没有可识别的模型列表，请查看原始包。</div>}</div>;
@@ -314,23 +314,148 @@ function MessagesView({ detail }: { detail: RequestDetail }) {
   const messages = extractMessages(detail);
   return <div className="message-flow">
     <div className="flow-label"><span>REQUEST MESSAGES</span><b>{messages.request.length}</b></div>
-    {messages.request.map((message, index) => <MessageCard key={`request-${index}`} message={message} index={index} />)}
+    {messages.request.map((message, index) => <MessageCard key={`request-${index}`} message={message} index={index} onCopy={onCopy} />)}
     <div className="flow-divider"><span>UPSTREAM RESPONSE</span></div>
-    {messages.response.map((message, index) => <MessageCard key={`response-${index}`} message={message} index={index} response />)}
+    {messages.response.map((message, index) => <MessageCard key={`response-${index}`} message={message} index={index} response onCopy={onCopy} />)}
     {!messages.response.length && <div className="inline-empty">{detail.status === "running" ? "正在等待完整消息…" : "没有可识别的 message，请查看原始响应。"}</div>}
   </div>;
 }
 
-function MessageCard({ message, index, response = false }: { message: InspectorMessage; index: number; response?: boolean }) {
+function MessageCard({ message, index, response = false, onCopy }: { message: InspectorMessage; index: number; response?: boolean; onCopy: (value: string, message?: string) => void }) {
   const role = message.role || "unknown";
   const content = typeof message.content === "string" ? message.content : message.content == null ? "" : JSON.stringify(message.content, null, 2);
+  const parsedContent = parseEmbeddedJSON(message.content);
+  const structuredToolResult = (role === "tool" || role === "function") && parsedContent.isJSON;
   return <article className={`message-card role-${role}`}>
     <header><span className="message-index">{response ? "R" : index + 1}</span><Badge tone={role === "assistant" ? "cyan" : role === "tool" || role === "function" ? "purple" : role === "system" || role === "developer" ? "amber" : "neutral"}>{role}</Badge>{message.name && <span className="muted">{message.name}</span>}{message.tool_call_id && <code>{message.tool_call_id}</code>}</header>
-    {content && <pre className="message-content">{content}</pre>}
+    {content && !structuredToolResult && <pre className="message-content">{content}</pre>}
+    {structuredToolResult && <ToolResultCard value={parsedContent.value} raw={content} onCopy={onCopy} />}
     {message.refusal != null && <StructuredField icon={<ShieldAlert size={14} />} label="refusal" value={message.refusal} />}
-    {message.function_call != null && <StructuredField icon={<Wrench size={14} />} label="function_call" value={message.function_call} />}
-    {Array.isArray(message.tool_calls) && message.tool_calls.map((tool, toolIndex) => <StructuredField key={toolIndex} icon={<Wrench size={14} />} label={`tool_call #${toolIndex}`} value={tool} />)}
+    {message.function_call != null && <ToolCallCard label="function_call" value={message.function_call} onCopy={onCopy} />}
+    {Array.isArray(message.tool_calls) && message.tool_calls.map((tool, toolIndex) => <ToolCallCard key={toolIndex} label={`tool_call #${toolIndex}`} value={tool} onCopy={onCopy} />)}
   </article>;
+}
+
+type UnknownRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): UnknownRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as UnknownRecord : null;
+}
+
+function displayValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null || typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value, null, 2);
+}
+
+function inlineValue(value: unknown): string {
+  const displayed = displayValue(value).replace(/\s+/g, " ");
+  return displayed.length > 72 ? `${displayed.slice(0, 72).trimEnd()}…` : displayed;
+}
+
+function shortCallID(value: string): string {
+  return value.length > 20 ? `${value.slice(0, 11)}…${value.slice(-5)}` : value;
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function ToolCallCard({ label, value, onCopy }: { label: string; value: unknown; onCopy: (value: string, message?: string) => void }) {
+  const tool = asRecord(value);
+  const fn = asRecord(tool?.function) || tool;
+  const name = typeof fn?.name === "string" ? fn.name : "unknown tool";
+  const callID = typeof tool?.id === "string" ? tool.id : "";
+  const argumentSource = fn?.arguments;
+  const parsedArguments = parseEmbeddedJSON(argumentSource);
+  const argumentRecord = asRecord(parsedArguments.value);
+  const argumentEntries = argumentRecord ? Object.entries(argumentRecord) : [];
+  const preview = argumentEntries.slice(0, 3).map(([key, entryValue]) => `${key}=${inlineValue(entryValue)}`).join(" · ");
+  const raw = JSON.stringify(value, null, 2) || String(value);
+
+  return <details className="tool-call-card">
+    <summary>
+      <ChevronRight size={14} className="details-chevron" />
+      <span className="tool-kind"><Wrench size={13} />{label}</span>
+      <strong>{name}</strong>
+      {preview && <span className="tool-preview">{preview}</span>}
+      {callID && <code title={callID}>{shortCallID(callID)}</code>}
+    </summary>
+    <div className="tool-card-body">
+      <div className="tool-section-label">调用参数</div>
+      {argumentEntries.length > 0 ? <dl className="tool-arguments">
+        {argumentEntries.map(([key, entryValue]) => <div key={key}><dt>{key}</dt><dd>{displayValue(entryValue)}</dd></div>)}
+      </dl> : <pre className="tool-code">{displayValue(parsedArguments.value ?? argumentSource ?? "无参数")}</pre>}
+      <RawJSON value={raw} onCopy={onCopy} />
+    </div>
+  </details>;
+}
+
+function ToolResultCard({ value, raw, onCopy }: { value: unknown; raw: string; onCopy: (value: string, message?: string) => void }) {
+  const result = asRecord(value);
+  const data = Array.isArray(result?.data) ? result.data : Array.isArray(value) ? value : null;
+  const success = typeof result?.success === "boolean" ? result.success : null;
+  const formatted = JSON.stringify(value, null, 2) || raw;
+  const visibleResults = data?.slice(0, 50) || [];
+
+  return <details className="tool-result-card">
+    <summary>
+      <ChevronRight size={14} className="details-chevron" />
+      <strong>工具返回</strong>
+      {success !== null && <Badge tone={success ? "green" : "red"}>{success ? "成功" : "失败"}</Badge>}
+      {data && <span>{data.length} 条结果</span>}
+      <code>{formatBytes(byteLength(raw || formatted))}</code>
+    </summary>
+    <div className="tool-card-body">
+      {data ? <>
+        <div className="tool-section-label">结果列表 <span>{data.length}</span></div>
+        <div className="tool-result-list">
+          {visibleResults.map((item, resultIndex) => <ToolResultItem key={resultIndex} value={item} index={resultIndex} />)}
+        </div>
+        {data.length > visibleResults.length && <div className="tool-result-note">仅展示前 {visibleResults.length} 条；完整内容可在原始 JSON 中查看。</div>}
+      </> : <pre className="tool-code tool-result-json">{formatted}</pre>}
+      <RawJSON value={formatted} onCopy={onCopy} />
+    </div>
+  </details>;
+}
+
+function ToolResultItem({ value, index }: { value: unknown; index: number }) {
+  const item = asRecord(value);
+  const uri = typeof item?.uri === "string" ? item.uri : "";
+  const name = [item?.title, item?.name, uri && uri.split(/[\\/]/).pop(), item?.document_id]
+    .find((candidate): candidate is string => typeof candidate === "string" && Boolean(candidate)) || `结果 #${index + 1}`;
+  const contentEntry = ["chunk_content", "content", "text"].find((key) => typeof item?.[key] === "string");
+  const content = contentEntry ? String(item?.[contentEntry]) : "";
+  const chunkID = item?.chunk_id;
+  const score = typeof item?.combined_rank === "number" ? item.combined_rank : typeof item?.score === "number" ? item.score : null;
+  const metadata = item ? Object.entries(item).filter(([key]) => key !== contentEntry).slice(0, 8) : [];
+  const fallback = JSON.stringify(value, null, 2) || String(value);
+
+  return <details className="tool-result-item">
+    <summary>
+      <ChevronRight size={13} className="details-chevron" />
+      <span className="result-index">{index + 1}</span>
+      <span className="result-summary">
+        <strong title={uri || name}>{name}</strong>
+        {content && <span>{textPreview(content)}</span>}
+      </span>
+      <span className="result-meta">{chunkID != null && `chunk ${String(chunkID)}`}{score != null && ` · ${score.toFixed(4)}`}</span>
+    </summary>
+    <div className="tool-result-detail">
+      {metadata.length > 0 && <dl>
+        {metadata.map(([key, entryValue]) => <div key={key}><dt>{key}</dt><dd>{displayValue(entryValue)}</dd></div>)}
+      </dl>}
+      <pre>{content || fallback}</pre>
+    </div>
+  </details>;
+}
+
+function RawJSON({ value, onCopy }: { value: string; onCopy: (value: string, message?: string) => void }) {
+  return <details className="tool-raw">
+    <summary><FileJson size={13} />原始 JSON</summary>
+    <div className="tool-raw-toolbar"><Button variant="ghost" onClick={() => onCopy(value, "JSON 已复制")}><Copy size={13} />复制 JSON</Button></div>
+    <pre>{value}</pre>
+  </details>;
 }
 
 function StructuredField({ icon, label, value }: { icon: React.ReactNode; label: string; value: unknown }) {

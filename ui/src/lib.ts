@@ -20,6 +20,31 @@ export function parseJSON(value: string): unknown | null {
   }
 }
 
+export function parseEmbeddedJSON(value: unknown): { value: unknown; isJSON: boolean } {
+  if (typeof value !== "string") {
+    return { value, isJSON: value !== null && typeof value === "object" };
+  }
+  if (!value.trim()) return { value, isJSON: false };
+  try {
+    return { value: JSON.parse(value), isJSON: true };
+  } catch {
+    return { value, isJSON: false };
+  }
+}
+
+export function textPreview(value: string, maxLength = 180): string {
+  const compact = value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&(?:nbsp|#160);/gi, " ")
+    .replace(/&(?:quot|#34);/gi, '"')
+    .replace(/&(?:apos|#39|#x27);/gi, "'")
+    .replace(/&(?:amp|#38);/gi, "&")
+    .replace(/^\s*[-#]+\s*/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return compact.length > maxLength ? `${compact.slice(0, maxLength).trimEnd()}…` : compact;
+}
+
 export function prettyBody(value: string): string {
   const parsed = parseJSON(value);
   return parsed === null ? value : JSON.stringify(parsed, null, 2);
@@ -86,4 +111,3 @@ export function formatTime(value: string): string {
     hour12: false,
   }).format(new Date(value));
 }
-
