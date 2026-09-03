@@ -15,6 +15,8 @@ const statusLabels: Record<string, string> = {
   running: "运行中", completed: "已完成", upstream_error: "上游错误", interrupted: "已中断",
 };
 
+const emptyRequests: RequestSummary[] = [];
+
 function StatusBadge({ status }: { status: string }) {
   const tone = status === "completed" ? "green" : status === "running" ? "cyan" : status === "interrupted" ? "amber" : "red";
   return <Badge tone={tone}><span className={status === "running" ? "status-pulse" : "status-dot"} />{statusLabels[status] || status}</Badge>;
@@ -97,7 +99,7 @@ export default function App() {
     columnHelper.display({ id: "size", header: "响应", cell: (info) => <span className="mono muted">{formatBytes(info.row.original.responseBytes)}</span> }),
     columnHelper.display({ id: "open", header: "", cell: () => <ChevronRight size={16} className="muted" /> }),
   ], []);
-  const table = useReactTable({ data: requestsQuery.data?.items || [], columns, getCoreRowModel: getCoreRowModel() });
+  const table = useReactTable({ data: requestsQuery.data?.items ?? emptyRequests, columns, getCoreRowModel: getCoreRowModel() });
 
   const selectProject = (id: string) => {
     setSelectedProjectId(id);

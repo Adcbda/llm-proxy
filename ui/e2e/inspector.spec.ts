@@ -20,6 +20,12 @@ test("creates a project, proxies a chat request, inspects it, rotates the key, a
   expect(await proxyResponse.text()).toContain("hello from upstream");
 
   await expect(page.getByText("e2e-agent-model")).toBeVisible();
+  const endpointFilter = page.getByLabel("接口筛选");
+  await endpointFilter.focus();
+  await endpointFilter.press("ArrowDown");
+  await expect(endpointFilter).toHaveValue("/v1/chat/completions");
+  await expect(page.getByText("e2e-agent-model")).toBeVisible();
+
   await page.getByText("e2e-agent-model").click();
   await expect(page.locator(".inspector")).toContainText("inspect me");
   await expect(page.locator(".inspector")).toContainText("hello from upstream");
