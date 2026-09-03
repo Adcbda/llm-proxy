@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -50,6 +51,9 @@ func main() {
 		Handler:           application.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		BaseContext: func(net.Listener) context.Context {
+			return ctx
+		},
 	}
 	go func() {
 		logger.Info("LLM Proxy is ready", "address", "http://"+cfg.ListenAddress, "data_dir", cfg.DataDir)
@@ -60,9 +64,13 @@ func main() {
 	}()
 
 	<-ctx.Done()
+	stopSignals()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("graceful shutdown", "error", err)
+		if closeErr := httpServer.Close(); closeErr != nil {
+			logger.Error("force close HTTP server", "error", closeErr)
+		}
 	}
 }
