@@ -61,3 +61,36 @@ func TestSSEAggregatorIgnoresMalformedEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSSECompletionRequiresDelimitedSentinel(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		stream   string
+		wantDone bool
+	}{
+		{"lf", "data: [DONE]\n\n", true},
+		{"crlf", "data:[DONE]\r\n\r\n", true},
+		{"partial_marker", "data: [DON", false},
+		{"missing_boundary", "data: [DONE]\n", false},
+		{"content_is_not_sentinel", "data: {\"choices\":[{\"delta\":{\"content\":\"[DONE]\"}}]}\n\n", false},
+		{"finish_reason_is_not_sentinel", "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			aggregator := NewSSEAggregator()
+			for index := range test.stream {
+				if aggregator.Done() {
+					t.Fatal("completion detected before the event boundary")
+				}
+				aggregator.Feed([]byte(test.stream[index : index+1]))
+			}
+			if aggregator.Done() != test.wantDone {
+				t.Fatalf("Done() = %v, want %v", aggregator.Done(), test.wantDone)
+			}
+			aggregator.Finish()
+			if aggregator.Done() != test.wantDone {
+				t.Fatal("Finish changed completion based on an incomplete event")
+			}
+		})
+	}
+}

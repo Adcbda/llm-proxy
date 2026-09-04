@@ -35,6 +35,7 @@ type ChoiceAggregate struct {
 
 type SSEAggregator struct {
 	buffer  []byte
+	done    bool
 	id      string
 	object  string
 	created any
@@ -56,7 +57,7 @@ func (aggregator *SSEAggregator) Feed(data []byte) {
 		}
 		event := bytes.Clone(aggregator.buffer[:index])
 		aggregator.buffer = aggregator.buffer[index+size:]
-		aggregator.consumeEvent(event)
+		aggregator.consumeEvent(event, true)
 	}
 	if len(aggregator.buffer) > 4<<20 {
 		aggregator.buffer = aggregator.buffer[len(aggregator.buffer)-(1<<20):]
@@ -65,10 +66,14 @@ func (aggregator *SSEAggregator) Feed(data []byte) {
 
 func (aggregator *SSEAggregator) Finish() {
 	if len(bytes.TrimSpace(aggregator.buffer)) > 0 {
-		aggregator.consumeEvent(aggregator.buffer)
+		aggregator.consumeEvent(aggregator.buffer, false)
 	}
 	aggregator.buffer = nil
 }
+
+// Done reports whether a complete, delimited [DONE] event was received.
+// A trailing partial event consumed by Finish is not a completion signal.
+func (aggregator *SSEAggregator) Done() bool { return aggregator.done }
 
 func nextSSEBoundary(data []byte) (int, int) {
 	lf := bytes.Index(data, []byte("\n\n"))
@@ -86,7 +91,7 @@ func nextSSEBoundary(data []byte) (int, int) {
 	}
 }
 
-func (aggregator *SSEAggregator) consumeEvent(event []byte) {
+func (aggregator *SSEAggregator) consumeEvent(event []byte, complete bool) {
 	lines := strings.Split(strings.ReplaceAll(string(event), "\r\n", "\n"), "\n")
 	dataLines := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -99,6 +104,9 @@ func (aggregator *SSEAggregator) consumeEvent(event []byte) {
 	}
 	payload := strings.Join(dataLines, "\n")
 	if payload == "[DONE]" {
+		if complete {
+			aggregator.done = true
+		}
 		return
 	}
 	var chunk map[string]any

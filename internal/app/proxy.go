@@ -112,7 +112,7 @@ func (server *Server) handleProxy(writer http.ResponseWriter, request *http.Requ
 	if streaming || strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
 		aggregator = NewSSEAggregator()
 	}
-	copyErr := server.copyResponse(writer, response.Body, responseCapture, aggregator, project.ID, requestID)
+	doneForwarded, copyErr := server.copyResponse(writer, response.Body, responseCapture, aggregator, project.ID, requestID)
 	if aggregator != nil {
 		aggregator.Finish()
 	}
@@ -124,11 +124,17 @@ func (server *Server) handleProxy(writer http.ResponseWriter, request *http.Requ
 		status = "upstream_error"
 	}
 	if copyErr != nil {
-		errorMessage = copyErr.Error()
-		if request.Context().Err() != nil || errors.Is(copyErr, context.Canceled) {
-			status = "interrupted"
+		if doneForwarded && response.StatusCode >= 200 && response.StatusCode < 300 {
+			// Clients may cancel the HTTP body after consuming the SSE completion
+			// sentinel. Keep the transport diagnostic without failing the request.
+			server.logger.Info("stream connection closed after completion", "request_id", requestID, "error", copyErr)
 		} else {
-			status = "upstream_error"
+			errorMessage = copyErr.Error()
+			if status != "upstream_error" && (request.Context().Err() != nil || errors.Is(copyErr, context.Canceled)) {
+				status = "interrupted"
+			} else {
+				status = "upstream_error"
+			}
 		}
 	}
 	aggregated := ""
@@ -147,9 +153,11 @@ func (server *Server) handleProxy(writer http.ResponseWriter, request *http.Requ
 	server.events.Publish(LiveEvent{Type: "request_completed", ProjectID: project.ID, RequestID: requestID})
 }
 
-func (server *Server) copyResponse(writer http.ResponseWriter, source io.Reader, capture *LimitedCapture, aggregator *SSEAggregator, projectID, requestID string) error {
+func (server *Server) copyResponse(writer http.ResponseWriter, source io.Reader, capture *LimitedCapture, aggregator *SSEAggregator, projectID, requestID string) (bool, error) {
 	buffer := make([]byte, 32*1024)
-	flusher, canFlush := writer.(http.Flusher)
+	_, canFlush := writer.(http.Flusher)
+	controller := http.NewResponseController(writer)
+	doneForwarded := false
 	lastProgress := time.Now()
 	for {
 		read, readErr := source.Read(buffer)
@@ -159,11 +167,18 @@ func (server *Server) copyResponse(writer http.ResponseWriter, source io.Reader,
 			if aggregator != nil {
 				aggregator.Feed(chunk)
 			}
-			if _, writeErr := writer.Write(chunk); writeErr != nil {
-				return writeErr
+			written, writeErr := writer.Write(chunk)
+			if writeErr != nil {
+				return doneForwarded, writeErr
+			}
+			if written != len(chunk) {
+				return doneForwarded, io.ErrShortWrite
 			}
 			if aggregator != nil && canFlush {
-				flusher.Flush()
+				if flushErr := controller.Flush(); flushErr != nil {
+					return doneForwarded, flushErr
+				}
+				doneForwarded = aggregator.Done()
 			}
 			if time.Since(lastProgress) >= 500*time.Millisecond {
 				server.events.Publish(LiveEvent{Type: "request_progress", ProjectID: projectID, RequestID: requestID})
@@ -172,9 +187,9 @@ func (server *Server) copyResponse(writer http.ResponseWriter, source io.Reader,
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
-				return nil
+				return doneForwarded, nil
 			}
-			return readErr
+			return doneForwarded, readErr
 		}
 	}
 }
