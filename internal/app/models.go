@@ -3,16 +3,31 @@ package app
 import "time"
 
 type Project struct {
-	ID                   string    `json:"id"`
-	Name                 string    `json:"name"`
-	BaseURL              string    `json:"baseUrl"`
-	UpstreamAPIKeyMasked string    `json:"upstreamApiKeyMasked"`
-	APIKeyPrefix         string    `json:"apiKeyPrefix"`
-	CreatedAt            time.Time `json:"createdAt"`
-	UpdatedAt            time.Time `json:"updatedAt"`
-	RequestCount         int       `json:"requestCount"`
-	UpstreamKeyEncrypted string    `json:"-"`
-	ProjectKeyEncrypted  string    `json:"-"`
+	ID                   string     `json:"id"`
+	Name                 string     `json:"name"`
+	BaseURL              string     `json:"baseUrl"`
+	UpstreamAPIKeyMasked string     `json:"upstreamApiKeyMasked"`
+	APIKeyPrefix         string     `json:"apiKeyPrefix"`
+	CreatedAt            time.Time  `json:"createdAt"`
+	UpdatedAt            time.Time  `json:"updatedAt"`
+	RequestCount         int        `json:"requestCount"`
+	CaptureState         string     `json:"captureState"`
+	CaptureStartedAt     *time.Time `json:"captureStartedAt"`
+	CapturePausedAt      *time.Time `json:"capturePausedAt"`
+	CaptureRequestCount  int        `json:"captureRequestCount"`
+	UpstreamKeyEncrypted string     `json:"-"`
+	ProjectKeyEncrypted  string     `json:"-"`
+	CaptureSessionID     string     `json:"-"`
+}
+
+type CaptureGroup struct {
+	ID           string    `json:"id"`
+	ProjectID    string    `json:"projectId"`
+	Name         string    `json:"name"`
+	StartedAt    time.Time `json:"startedAt"`
+	EndedAt      time.Time `json:"endedAt"`
+	CreatedAt    time.Time `json:"createdAt"`
+	RequestCount int       `json:"requestCount"`
 }
 
 type RequestLog struct {
@@ -44,6 +59,7 @@ type RequestLog struct {
 type RequestSummary struct {
 	ID                string     `json:"id"`
 	ProjectID         string     `json:"projectId"`
+	GroupID           string     `json:"groupId,omitempty"`
 	Method            string     `json:"method"`
 	Path              string     `json:"path"`
 	Model             string     `json:"model"`

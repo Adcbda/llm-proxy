@@ -17,6 +17,10 @@ type projectInput struct {
 	UpstreamAPIKey *string `json:"upstreamApiKey,omitempty"`
 }
 
+type captureGroupInput struct {
+	Name string `json:"name"`
+}
+
 func (server *Server) listProjects(writer http.ResponseWriter, request *http.Request) {
 	projects, err := server.store.ListProjects(request.Context())
 	if err != nil {
@@ -219,12 +223,73 @@ func (server *Server) listRequests(writer http.ResponseWriter, request *http.Req
 		ProjectID: projectID, Limit: parseLimit(request.URL.Query().Get("limit")),
 		Cursor: request.URL.Query().Get("cursor"), Status: request.URL.Query().Get("status"),
 		Path: request.URL.Query().Get("path"), Model: request.URL.Query().Get("model"), Streaming: streaming,
+		GroupID: request.URL.Query().Get("groupId"),
 	})
 	if err != nil {
 		writeAPIError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(writer, http.StatusOK, result)
+}
+
+func (server *Server) startCapture(writer http.ResponseWriter, request *http.Request, projectID string) {
+	sessionID, err := NewID("cap")
+	if err != nil {
+		writeAPIError(writer, http.StatusInternalServerError, "could not create capture session")
+		return
+	}
+	project, err := server.store.StartCapture(request.Context(), projectID, sessionID)
+	if err != nil {
+		handleStoreError(writer, err)
+		return
+	}
+	server.decorateProject(&project)
+	server.events.Publish(LiveEvent{Type: "capture_changed", ProjectID: projectID})
+	writeJSON(writer, http.StatusOK, project)
+}
+
+func (server *Server) pauseCapture(writer http.ResponseWriter, request *http.Request, projectID string) {
+	project, err := server.store.PauseCapture(request.Context(), projectID)
+	if err != nil {
+		handleStoreError(writer, err)
+		return
+	}
+	server.decorateProject(&project)
+	server.events.Publish(LiveEvent{Type: "capture_changed", ProjectID: projectID})
+	writeJSON(writer, http.StatusOK, project)
+}
+
+func (server *Server) listCaptureGroups(writer http.ResponseWriter, request *http.Request, projectID string) {
+	groups, err := server.store.ListCaptureGroups(request.Context(), projectID)
+	if err != nil {
+		handleStoreError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"items": groups})
+}
+
+func (server *Server) saveCaptureGroup(writer http.ResponseWriter, request *http.Request, projectID string) {
+	var input captureGroupInput
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" || len(name) > 100 {
+		writeAPIError(writer, http.StatusBadRequest, "group name must contain 1-100 characters")
+		return
+	}
+	groupID, err := NewID("grp")
+	if err != nil {
+		writeAPIError(writer, http.StatusInternalServerError, "could not create capture group")
+		return
+	}
+	group, err := server.store.SaveCaptureGroup(request.Context(), projectID, groupID, name)
+	if err != nil {
+		handleStoreError(writer, err)
+		return
+	}
+	server.events.Publish(LiveEvent{Type: "capture_changed", ProjectID: projectID})
+	writeJSON(writer, http.StatusCreated, group)
 }
 
 func (server *Server) getRequest(writer http.ResponseWriter, request *http.Request, id string) {

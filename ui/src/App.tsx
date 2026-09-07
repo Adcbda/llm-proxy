@@ -4,10 +4,10 @@ import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "
 import {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, Check, ChevronRight, CircleDot,
   Clipboard, Code2, Copy, Database, Eye, EyeOff, FileJson, Gauge, KeyRound, ListFilter,
-  Menu, MessageSquare, MoreHorizontal, Network, Plus, Radio, RefreshCw, RotateCw,
-  Search, Settings, ShieldAlert, Trash2, Wrench, X,
+  Menu, MessageSquare, MoreHorizontal, Network, Pause, Play, Plus, Radio, RefreshCw, RotateCw,
+  Save, Search, Settings, ShieldAlert, Trash2, Wrench, X,
 } from "lucide-react";
-import { api, type Project, type RequestDetail, type RequestFilters, type RequestSummary } from "./api";
+import { api, type CaptureGroup, type Project, type RequestDetail, type RequestFilters, type RequestSummary } from "./api";
 import { extractMessages, formatBytes, formatDuration, formatTime, modelList, parseEmbeddedJSON, parseJSON, parseSSEEvents, prettyBody, textPreview, type InspectorMessage } from "./lib";
 import { Badge, Button, Dialog, Field, Input, Select, Spinner, Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui";
 
@@ -16,6 +16,26 @@ const statusLabels: Record<string, string> = {
 };
 
 const emptyRequests: RequestSummary[] = [];
+
+const captureGroupColors = [
+  { color: "#57d3d8", tint: "rgba(87, 211, 216, .065)", hover: "rgba(87, 211, 216, .11)" },
+  { color: "#b9a0ff", tint: "rgba(185, 160, 255, .065)", hover: "rgba(185, 160, 255, .11)" },
+  { color: "#e7b967", tint: "rgba(231, 185, 103, .065)", hover: "rgba(231, 185, 103, .11)" },
+  { color: "#76d59a", tint: "rgba(118, 213, 154, .065)", hover: "rgba(118, 213, 154, .11)" },
+  { color: "#f08eaa", tint: "rgba(240, 142, 170, .065)", hover: "rgba(240, 142, 170, .11)" },
+  { color: "#7eb8ff", tint: "rgba(126, 184, 255, .065)", hover: "rgba(126, 184, 255, .11)" },
+];
+
+function captureGroupStyle(groupId: string): React.CSSProperties {
+  let hash = 0;
+  for (const character of groupId) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  const palette = captureGroupColors[(hash >>> 0) % captureGroupColors.length];
+  return {
+    "--capture-group-color": palette.color,
+    "--capture-group-tint": palette.tint,
+    "--capture-group-hover": palette.hover,
+  } as React.CSSProperties;
+}
 
 function StatusBadge({ status }: { status: string }) {
   const tone = status === "completed" ? "green" : status === "running" ? "cyan" : status === "interrupted" ? "amber" : "red";
@@ -31,12 +51,32 @@ export default function App() {
   const [cursorHistory, setCursorHistory] = useState<string[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [saveGroupOpen, setSaveGroupOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toast, setToast] = useState("");
 
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: api.listProjects });
   const projects = projectsQuery.data?.items || [];
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
+  const groupsQuery = useQuery({
+    queryKey: ["capture-groups", selectedProjectId],
+    queryFn: () => api.listCaptureGroups(selectedProjectId),
+    enabled: Boolean(selectedProjectId),
+  });
+  const captureGroups = groupsQuery.data?.items || [];
+  const refreshCapture = () => {
+    queryClient.invalidateQueries({ queryKey: ["projects"] });
+    queryClient.invalidateQueries({ queryKey: ["requests", selectedProjectId] });
+    queryClient.invalidateQueries({ queryKey: ["capture-groups", selectedProjectId] });
+  };
+  const startCapture = useMutation({
+    mutationFn: () => api.startCapture(selectedProjectId),
+    onSuccess: () => { refreshCapture(); setToast("抓包已开启"); },
+  });
+  const pauseCapture = useMutation({
+    mutationFn: () => api.pauseCapture(selectedProjectId),
+    onSuccess: () => { refreshCapture(); setToast("抓包已暂停"); },
+  });
 
   useEffect(() => {
     if (!selectedProjectId && projects[0]) setSelectedProjectId(projects[0].id);
@@ -50,6 +90,10 @@ export default function App() {
     setCursorHistory([]);
     setSelectedRequestId("");
   }, [selectedProjectId, filters]);
+
+  useEffect(() => {
+    setFilters((value) => value.groupId ? { ...value, groupId: "" } : value);
+  }, [selectedProjectId]);
 
   const requestsQuery = useQuery({
     queryKey: ["requests", selectedProjectId, filters, cursor],
@@ -70,6 +114,7 @@ export default function App() {
     const refresh = (event: MessageEvent) => {
       queryClient.invalidateQueries({ queryKey: ["requests", selectedProjectId] });
       queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.invalidateQueries({ queryKey: ["capture-groups", selectedProjectId] });
       try {
         const payload = JSON.parse(event.data) as { requestId?: string };
         if (payload.requestId && payload.requestId === selectedRequestId) {
@@ -77,7 +122,7 @@ export default function App() {
         }
       } catch { /* keep the live connection resilient */ }
     };
-    ["request_started", "request_progress", "request_completed", "requests_cleared", "project_changed"].forEach((name) => events.addEventListener(name, refresh as EventListener));
+    ["request_started", "request_progress", "request_completed", "requests_cleared", "project_changed", "capture_changed"].forEach((name) => events.addEventListener(name, refresh as EventListener));
     return () => events.close();
   }, [queryClient, selectedProjectId, selectedRequestId]);
 
@@ -141,11 +186,15 @@ export default function App() {
         <header className="topbar">
           <div className="topbar-title">
             <Button variant="ghost" className="mobile-menu" onClick={() => setSidebarOpen(true)}><Menu size={19} /></Button>
-            <div><div className="eyebrow"><CircleDot size={12} /> LIVE CAPTURE</div><h1>{selectedProject?.name || "LLM 请求调试台"}</h1></div>
+            <div><div className={`eyebrow capture-${selectedProject?.captureState || "idle"}`}><CircleDot size={12} /> {selectedProject?.captureState === "capturing" ? "CAPTURE ACTIVE" : selectedProject?.captureState === "paused" ? "CAPTURE PAUSED" : "CAPTURE READY"}</div><h1>{selectedProject?.name || "LLM 请求调试台"}</h1></div>
           </div>
           <div className="topbar-actions">
             {selectedProject && <>
-              <Button variant="outline" onClick={() => copy(`${location.origin}/v1`, "BaseURL 已复制")}><Copy size={15} />复制 BaseURL</Button>
+              {selectedProject.captureState === "capturing" ?
+                <Button variant="danger" disabled={pauseCapture.isPending} onClick={() => pauseCapture.mutate()}>{pauseCapture.isPending ? <Spinner /> : <Pause size={15} />}暂停抓包</Button> :
+                <Button disabled={startCapture.isPending} onClick={() => startCapture.mutate()}>{startCapture.isPending ? <Spinner /> : <Play size={15} />}{selectedProject.captureState === "paused" ? "继续抓包" : "开启抓包"}</Button>}
+              {selectedProject.captureState === "paused" && <Button variant="outline" onClick={() => setSaveGroupOpen(true)}><Save size={15} />保存为分组</Button>}
+              <Button variant="outline" className="copy-baseurl" onClick={() => copy(`${location.origin}/v1`, "BaseURL 已复制")}><Copy size={15} />复制 BaseURL</Button>
               <Button variant="ghost" aria-label="项目设置" onClick={() => setSettingsOpen(true)}><Settings size={18} /></Button>
             </>}
           </div>
@@ -161,13 +210,16 @@ export default function App() {
           <section className="workspace">
             <div className="summary-strip">
               <Metric icon={<Activity size={16} />} label="当前页请求" value={String(requestsQuery.data?.items.length || 0)} />
-              <Metric icon={<Gauge size={16} />} label="运行中" value={String(requestsQuery.data?.items.filter((item) => item.status === "running").length || 0)} accent />
+              <Metric icon={<Gauge size={16} />} label="本轮抓包" value={String(selectedProject.captureRequestCount)} accent={selectedProject.captureState === "capturing"} />
               <Metric icon={<Database size={16} />} label="项目记录" value={selectedProject.requestCount.toLocaleString()} />
-              <div className="connection-chip"><span className="live-dot" />实时连接</div>
+              <div className={`connection-chip capture-chip ${selectedProject.captureState}`}><span className={selectedProject.captureState === "capturing" ? "live-dot" : "capture-state-dot"} />{selectedProject.captureState === "capturing" ? "正在抓包" : selectedProject.captureState === "paused" ? "已暂停" : "等待开启"}</div>
             </div>
 
             <div className="toolbar">
               <div className="filter-icon"><ListFilter size={17} /><span>筛选</span></div>
+              {captureGroups.length > 0 && <Select aria-label="抓包分组筛选" value={filters.groupId || ""} onChange={(event) => setFilters((value) => ({ ...value, groupId: event.target.value }))}>
+                <option value="">全部抓包</option>{captureGroups.map((group) => <option key={group.id} value={group.id}>{group.name} ({group.requestCount})</option>)}
+              </Select>}
               <Select aria-label="状态筛选" value={filters.status || ""} onChange={(event) => setFilters((value) => ({ ...value, status: event.target.value }))}>
                 <option value="">全部状态</option><option value="running">运行中</option><option value="completed">已完成</option><option value="upstream_error">上游错误</option><option value="interrupted">已中断</option>
               </Select>
@@ -185,11 +237,14 @@ export default function App() {
               <table className="request-table">
                 <thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id}>{flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead>
                 <tbody>
-                  {table.getRowModel().rows.map((row) => (
-                    <tr key={row.id} className={selectedRequestId === row.original.id ? "selected" : ""} onClick={() => setSelectedRequestId(row.original.id)}>
-                      {row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
-                    </tr>
-                  ))}
+                  {table.getRowModel().rows.map((row) => {
+                    const group = !filters.groupId && row.original.groupId ? captureGroups.find((item) => item.id === row.original.groupId) : undefined;
+                    return (
+                      <tr key={row.id} className={`${selectedRequestId === row.original.id ? "selected " : ""}${group ? "capture-group-row" : ""}`} style={group ? captureGroupStyle(group.id) : undefined} title={group ? `抓包分组：${group.name}` : undefined} onClick={() => setSelectedRequestId(row.original.id)}>
+                        {row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               {requestsQuery.isLoading && <div className="table-state"><Spinner />加载请求…</div>}
@@ -207,6 +262,7 @@ export default function App() {
       </main>
 
       {selectedRequestId && <RequestInspector detail={detailQuery.data} loading={detailQuery.isLoading} error={detailQuery.error?.message} onClose={() => setSelectedRequestId("")} onCopy={copy} />}
+      {selectedProject && <SaveCaptureGroupDialog open={saveGroupOpen} onOpenChange={setSaveGroupOpen} project={selectedProject} onSaved={(group) => { refreshCapture(); setFilters((value) => ({ ...value, groupId: group.id })); setToast(`已保存分组“${group.name}”`); }} />}
       <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={(project) => { setSelectedProjectId(project.id); queryClient.invalidateQueries({ queryKey: ["projects"] }); }} />
       {selectedProject && <ProjectSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} project={selectedProject} onChanged={() => queryClient.invalidateQueries({ queryKey: ["projects"] })} onDeleted={() => { setSettingsOpen(false); setSelectedProjectId(""); queryClient.invalidateQueries({ queryKey: ["projects"] }); }} onToast={setToast} />}
       {toast && <div className="toast"><Check size={16} />{toast}</div>}
@@ -220,6 +276,37 @@ function Metric({ icon, label, value, accent = false }: { icon: React.ReactNode;
 
 function EmptyWorkspace({ onCreate, loading }: { onCreate: () => void; loading: boolean }) {
   return <div className="empty-workspace">{loading ? <Spinner /> : <><div className="empty-orbit"><Network size={34} /></div><span className="eyebrow">OPENAI-COMPATIBLE CAPTURE</span><h2>看清 Agent 的每一次模型交互</h2><p>创建项目后会得到独立 API Key。所有 Chat Completions 和 Models 请求都会在这里实时出现。</p><Button onClick={onCreate}><Plus size={16} />创建项目</Button></>}</div>;
+}
+
+function SaveCaptureGroupDialog({ open, onOpenChange, project, onSaved }: {
+  open: boolean;
+  onOpenChange: (value: boolean) => void;
+  project: Project;
+  onSaved: (group: CaptureGroup) => void;
+}) {
+  const defaultName = () => `抓包 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
+  const [name, setName] = useState(defaultName);
+  const mutation = useMutation({
+    mutationFn: () => api.saveCaptureGroup(project.id, name),
+    onSuccess: (group) => {
+      onSaved(group);
+      onOpenChange(false);
+    },
+  });
+  useEffect(() => {
+    if (open) {
+      setName(defaultName());
+      mutation.reset();
+    }
+    // Reset only when the dialog opens; mutation is deliberately not a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, project.id]);
+  return <Dialog open={open} onOpenChange={onOpenChange} title="保存抓包分组" description={`本轮共抓取 ${project.captureRequestCount} 条请求。保存后可以通过分组筛选快速回看。`} footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button disabled={!name.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Spinner /> : <Save size={15} />}保存分组</Button></>}>
+    <div className="form-stack">
+      <Field label="分组名称"><Input autoFocus maxLength={100} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：工具调用异常复现" /></Field>
+      {mutation.error && <div className="form-error"><AlertTriangle size={15} />{mutation.error.message}</div>}
+    </div>
+  </Dialog>;
 }
 
 function CreateProjectDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (value: boolean) => void; onCreated: (project: Project) => void }) {

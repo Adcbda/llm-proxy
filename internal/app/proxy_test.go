@@ -102,6 +102,94 @@ func TestProxyCaptureLimitDoesNotLimitForwarding(t *testing.T) {
 	}
 }
 
+func TestCaptureCanPauseSaveGroupAndStartANewRound(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"object":"list","data":[]}`))
+	}))
+	defer upstream.Close()
+	server, store, key := newTestServer(t, upstream.URL, "", 1<<20)
+	proxy := httptest.NewServer(server.Handler())
+	defer proxy.Close()
+
+	callModels := func() string {
+		request, _ := http.NewRequest(http.MethodGet, proxy.URL+"/v1/models", nil)
+		request.Header.Set("Authorization", "Bearer "+key)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("models returned %d", response.StatusCode)
+		}
+		return response.Header.Get("X-LLM-Proxy-Request-ID")
+	}
+	postAPI := func(path, body string, target any) int {
+		response, err := http.Post(proxy.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if target != nil {
+			if err := json.NewDecoder(response.Body).Decode(target); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return response.StatusCode
+	}
+
+	firstID := callModels()
+	if _, err := store.GetRequest(context.Background(), firstID); err != nil {
+		t.Fatalf("active capture did not save request: %v", err)
+	}
+	var paused Project
+	if status := postAPI("/api/projects/prj_test/capture/pause", "", &paused); status != http.StatusOK {
+		t.Fatalf("pause returned %d", status)
+	}
+	if paused.CaptureState != "paused" || paused.CaptureRequestCount != 1 {
+		t.Fatalf("unexpected paused state: %+v", paused)
+	}
+
+	uncapturedID := callModels()
+	if _, err := store.GetRequest(context.Background(), uncapturedID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("request made while paused was captured: %v", err)
+	}
+	var group CaptureGroup
+	if status := postAPI("/api/projects/prj_test/capture-groups", `{"name":"first round"}`, &group); status != http.StatusCreated {
+		t.Fatalf("save group returned %d", status)
+	}
+	if group.Name != "first round" || group.RequestCount != 1 {
+		t.Fatalf("unexpected group: %+v", group)
+	}
+	groupRequests, err := store.ListRequests(context.Background(), ListRequestsParams{ProjectID: "prj_test", GroupID: group.ID})
+	if err != nil || len(groupRequests.Items) != 1 || groupRequests.Items[0].ID != firstID || groupRequests.Items[0].GroupID != group.ID {
+		t.Fatalf("unexpected grouped requests: %+v, %v", groupRequests, err)
+	}
+	allRequests, err := store.ListRequests(context.Background(), ListRequestsParams{ProjectID: "prj_test"})
+	if err != nil || len(allRequests.Items) != 1 || allRequests.Items[0].GroupID != group.ID {
+		t.Fatalf("all requests did not include capture group: %+v, %v", allRequests, err)
+	}
+
+	var started Project
+	if status := postAPI("/api/projects/prj_test/capture/start", "", &started); status != http.StatusOK {
+		t.Fatalf("start returned %d", status)
+	}
+	if started.CaptureState != "capturing" || started.CaptureRequestCount != 0 {
+		t.Fatalf("unexpected new capture state: %+v", started)
+	}
+	secondID := callModels()
+	if _, err := store.GetRequest(context.Background(), secondID); err != nil {
+		t.Fatalf("new capture round did not save request: %v", err)
+	}
+	groups, err := store.ListCaptureGroups(context.Background(), "prj_test")
+	if err != nil || len(groups) != 1 || groups[0].RequestCount != 1 {
+		t.Fatalf("saved group changed after new round: %+v, %v", groups, err)
+	}
+}
+
 func TestProxyStreamsAndStoresAggregatedAssistantMessage(t *testing.T) {
 	t.Parallel()
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

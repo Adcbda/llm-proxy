@@ -57,20 +57,25 @@ func (server *Server) handleProxy(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	startedAt := time.Now().UTC()
-	if err := server.store.StartRequest(request.Context(), StartRequestParams{
-		ID: requestID, ProjectID: project.ID, Method: request.Method, Path: request.URL.Path,
-		UpstreamURL: upstreamURL, RequestHeaders: redactHeaders(request.Header), StartedAt: startedAt,
-	}); err != nil {
-		server.logger.Error("start request capture", "error", err, "request_id", requestID)
-		writeOpenAIError(writer, http.StatusInternalServerError, "capture_error", "could not start request capture")
-		return
-	}
+	capturing := project.CaptureState == "capturing" && project.CaptureSessionID != ""
+	var requestCapture, responseCapture *LimitedCapture
+	if capturing {
+		if err := server.store.StartRequest(request.Context(), StartRequestParams{
+			ID: requestID, ProjectID: project.ID, Method: request.Method, Path: request.URL.Path,
+			UpstreamURL: upstreamURL, RequestHeaders: redactHeaders(request.Header), StartedAt: startedAt,
+			CaptureSessionID: project.CaptureSessionID,
+		}); err != nil {
+			server.logger.Error("start request capture", "error", err, "request_id", requestID)
+			writeOpenAIError(writer, http.StatusInternalServerError, "capture_error", "could not start request capture")
+			return
+		}
 
-	requestCapture := NewLimitedCapture(server.config.CaptureMaxBytes)
-	responseCapture := NewLimitedCapture(server.config.CaptureMaxBytes)
-	server.active.Put(requestID, &ActiveCapture{ProjectID: project.ID, Request: requestCapture, Response: responseCapture})
-	server.events.Publish(LiveEvent{Type: "request_started", ProjectID: project.ID, RequestID: requestID})
-	defer server.active.Delete(requestID)
+		requestCapture = NewLimitedCapture(server.config.CaptureMaxBytes)
+		responseCapture = NewLimitedCapture(server.config.CaptureMaxBytes)
+		server.active.Put(requestID, &ActiveCapture{ProjectID: project.ID, Request: requestCapture, Response: responseCapture})
+		server.events.Publish(LiveEvent{Type: "request_started", ProjectID: project.ID, RequestID: requestID})
+		defer server.active.Delete(requestID)
+	}
 
 	outgoing := request.Clone(request.Context())
 	parsedURL, _ := url.Parse(upstreamURL)
@@ -84,22 +89,23 @@ func (server *Server) handleProxy(writer http.ResponseWriter, request *http.Requ
 	if upstreamKey != "" {
 		outgoing.Header.Set("Authorization", "Bearer "+upstreamKey)
 	}
-	if request.Body != nil {
+	if capturing && request.Body != nil {
 		outgoing.Body = &captureReadCloser{reader: io.TeeReader(request.Body, requestCapture), closer: request.Body}
 	}
 
 	response, doErr := server.client.Do(outgoing)
-	requestBody, requestBytes, requestTruncated := requestCapture.Snapshot()
-	model, streaming := parseRequestMeta(requestBody)
-	if request.URL.Path == "/v1/models" {
-		streaming = false
-	}
-	if err := server.store.UpdateRequestCapture(context.Background(), requestID, model, streaming, requestBody, requestBytes, requestTruncated); err != nil {
-		server.logger.Error("save request body", "error", err, "request_id", requestID)
+	streaming := false
+	if capturing {
+		requestBody, requestBytes, requestTruncated := requestCapture.Snapshot()
+		model, requestStreaming := parseRequestMeta(requestBody)
+		streaming = requestStreaming && request.URL.Path != "/v1/models"
+		if err := server.store.UpdateRequestCapture(context.Background(), requestID, model, streaming, requestBody, requestBytes, requestTruncated); err != nil {
+			server.logger.Error("save request body", "error", err, "request_id", requestID)
+		}
 	}
 
 	if doErr != nil {
-		server.finishUpstreamFailure(writer, request, project.ID, requestID, startedAt, doErr)
+		server.finishUpstreamFailure(writer, request, project.ID, requestID, startedAt, doErr, capturing)
 		return
 	}
 	defer response.Body.Close()
@@ -115,6 +121,9 @@ func (server *Server) handleProxy(writer http.ResponseWriter, request *http.Requ
 	doneForwarded, copyErr := server.copyResponse(writer, response.Body, responseCapture, aggregator, project.ID, requestID)
 	if aggregator != nil {
 		aggregator.Finish()
+	}
+	if !capturing {
+		return
 	}
 	responseBody, responseBytes, responseTruncated := responseCapture.Snapshot()
 	finishedAt := time.Now().UTC()
@@ -163,7 +172,9 @@ func (server *Server) copyResponse(writer http.ResponseWriter, source io.Reader,
 		read, readErr := source.Read(buffer)
 		if read > 0 {
 			chunk := buffer[:read]
-			_, _ = capture.Write(chunk)
+			if capture != nil {
+				_, _ = capture.Write(chunk)
+			}
 			if aggregator != nil {
 				aggregator.Feed(chunk)
 			}
@@ -180,7 +191,7 @@ func (server *Server) copyResponse(writer http.ResponseWriter, source io.Reader,
 				}
 				doneForwarded = aggregator.Done()
 			}
-			if time.Since(lastProgress) >= 500*time.Millisecond {
+			if capture != nil && time.Since(lastProgress) >= 500*time.Millisecond {
 				server.events.Publish(LiveEvent{Type: "request_progress", ProjectID: projectID, RequestID: requestID})
 				lastProgress = time.Now()
 			}
@@ -194,7 +205,7 @@ func (server *Server) copyResponse(writer http.ResponseWriter, source io.Reader,
 	}
 }
 
-func (server *Server) finishUpstreamFailure(writer http.ResponseWriter, request *http.Request, projectID, requestID string, startedAt time.Time, upstreamErr error) {
+func (server *Server) finishUpstreamFailure(writer http.ResponseWriter, request *http.Request, projectID, requestID string, startedAt time.Time, upstreamErr error, capturing bool) {
 	finishedAt := time.Now().UTC()
 	status := "upstream_error"
 	if request.Context().Err() != nil {
@@ -206,13 +217,15 @@ func (server *Server) finishUpstreamFailure(writer http.ResponseWriter, request 
 	writer.WriteHeader(http.StatusBadGateway)
 	_, _ = writer.Write(body)
 	httpStatus := http.StatusBadGateway
-	_ = server.store.FinishRequest(context.Background(), FinishRequestParams{
-		ID: requestID, Status: status, HTTPStatus: &httpStatus, Error: upstreamErr.Error(),
-		FinishedAt: finishedAt, DurationMS: finishedAt.Sub(startedAt).Milliseconds(),
-		ResponseHeaders: jsonObject{"Content-Type": {"application/json; charset=utf-8"}},
-		ResponseBody:    body, ResponseBytes: int64(len(body)),
-	})
-	server.events.Publish(LiveEvent{Type: "request_completed", ProjectID: projectID, RequestID: requestID})
+	if capturing {
+		_ = server.store.FinishRequest(context.Background(), FinishRequestParams{
+			ID: requestID, Status: status, HTTPStatus: &httpStatus, Error: upstreamErr.Error(),
+			FinishedAt: finishedAt, DurationMS: finishedAt.Sub(startedAt).Milliseconds(),
+			ResponseHeaders: jsonObject{"Content-Type": {"application/json; charset=utf-8"}},
+			ResponseBody:    body, ResponseBytes: int64(len(body)),
+		})
+		server.events.Publish(LiveEvent{Type: "request_completed", ProjectID: projectID, RequestID: requestID})
+	}
 }
 
 func bearerToken(header string) string {

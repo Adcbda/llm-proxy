@@ -14,7 +14,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound           = errors.New("not found")
+	ErrCaptureNotPaused   = errors.New("capture is not paused")
+	ErrCaptureSessionGone = errors.New("capture session is unavailable")
+)
 
 type Store struct {
 	db *sql.DB
@@ -53,6 +57,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			api_key_hash TEXT NOT NULL UNIQUE,
 			api_key_enc TEXT NOT NULL,
 			api_key_prefix TEXT NOT NULL,
+			capture_enabled INTEGER NOT NULL DEFAULT 1,
+			capture_session_id TEXT NOT NULL DEFAULT '',
+			capture_started_at TEXT,
+			capture_paused_at TEXT,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -78,7 +86,17 @@ func (s *Store) migrate(ctx context.Context) error {
 			request_truncated INTEGER NOT NULL DEFAULT 0,
 			response_truncated INTEGER NOT NULL DEFAULT 0,
 			request_bytes INTEGER NOT NULL DEFAULT 0,
-			response_bytes INTEGER NOT NULL DEFAULT 0
+			response_bytes INTEGER NOT NULL DEFAULT 0,
+			capture_session_id TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS capture_groups (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			session_id TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL,
+			started_at TEXT NOT NULL,
+			ended_at TEXT NOT NULL,
+			created_at TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_project_started
 			ON request_logs(project_id, started_at DESC, id DESC)`,
@@ -92,7 +110,78 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("apply database migration: %w", err)
 		}
 	}
+	// Databases created before capture sessions existed need the additional
+	// columns before capture-specific indexes can be created.
+	if err := s.ensureCaptureColumns(ctx); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_capture_session
+			ON request_logs(project_id, capture_session_id, started_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_capture_groups_project_created
+			ON capture_groups(project_id, created_at DESC, id DESC)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("apply capture index: %w", err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+		VALUES (2, datetime('now'))`); err != nil {
+		return fmt.Errorf("record capture migration: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE projects SET
+		capture_session_id = 'cap_' || id || '_' || lower(hex(randomblob(8))),
+		capture_started_at = COALESCE(capture_started_at, updated_at)
+		WHERE capture_enabled = 1 AND capture_session_id = ''`); err != nil {
+		return fmt.Errorf("initialize capture sessions: %w", err)
+	}
 	return nil
+}
+
+func (s *Store) ensureCaptureColumns(ctx context.Context) error {
+	columns := []struct {
+		table, name, definition string
+	}{
+		{"projects", "capture_enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"projects", "capture_session_id", "TEXT NOT NULL DEFAULT ''"},
+		{"projects", "capture_started_at", "TEXT"},
+		{"projects", "capture_paused_at", "TEXT"},
+		{"request_logs", "capture_session_id", "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		exists, err := s.columnExists(ctx, column.table, column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE `+column.table+` ADD COLUMN `+column.name+` `+column.definition); err != nil {
+			return fmt.Errorf("add %s.%s: %w", column.table, column.name, err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) columnExists(ctx context.Context, table, name string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var columnName, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if columnName == name {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (s *Store) MarkInterrupted(ctx context.Context) error {
@@ -116,11 +205,16 @@ type CreateProjectParams struct {
 
 func (s *Store) CreateProject(ctx context.Context, params CreateProjectParams) (Project, error) {
 	now := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO projects
-		(id, name, base_url, upstream_key_enc, api_key_hash, api_key_enc, api_key_prefix, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, params.ID, params.Name, params.BaseURL,
+	captureSessionID, err := NewID("cap")
+	if err != nil {
+		return Project{}, fmt.Errorf("create capture session id: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO projects
+		(id, name, base_url, upstream_key_enc, api_key_hash, api_key_enc, api_key_prefix,
+		 capture_enabled, capture_session_id, capture_started_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`, params.ID, params.Name, params.BaseURL,
 		params.UpstreamKeyEncrypted, params.APIKeyHash, params.APIKeyEncrypted, params.APIKeyPrefix,
-		formatTime(now), formatTime(now))
+		captureSessionID, formatTime(now), formatTime(now), formatTime(now))
 	if err != nil {
 		return Project{}, err
 	}
@@ -129,7 +223,10 @@ func (s *Store) CreateProject(ctx context.Context, params CreateProjectParams) (
 
 func (s *Store) ListProjects(ctx context.Context) ([]Project, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT p.id, p.name, p.base_url, p.upstream_key_enc,
-		p.api_key_enc, p.api_key_prefix, p.created_at, p.updated_at, COUNT(r.id)
+		p.api_key_enc, p.api_key_prefix, p.created_at, p.updated_at, COUNT(r.id),
+		p.capture_enabled, p.capture_session_id, p.capture_started_at, p.capture_paused_at,
+		(SELECT COUNT(*) FROM request_logs cr WHERE cr.project_id = p.id
+		 AND cr.capture_session_id = p.capture_session_id)
 		FROM projects p LEFT JOIN request_logs r ON r.project_id = p.id
 		GROUP BY p.id ORDER BY p.created_at ASC`)
 	if err != nil {
@@ -149,7 +246,10 @@ func (s *Store) ListProjects(ctx context.Context) ([]Project, error) {
 
 func (s *Store) GetProject(ctx context.Context, id string) (Project, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT p.id, p.name, p.base_url, p.upstream_key_enc,
-		p.api_key_enc, p.api_key_prefix, p.created_at, p.updated_at, COUNT(r.id)
+		p.api_key_enc, p.api_key_prefix, p.created_at, p.updated_at, COUNT(r.id),
+		p.capture_enabled, p.capture_session_id, p.capture_started_at, p.capture_paused_at,
+		(SELECT COUNT(*) FROM request_logs cr WHERE cr.project_id = p.id
+		 AND cr.capture_session_id = p.capture_session_id)
 		FROM projects p LEFT JOIN request_logs r ON r.project_id = p.id
 		WHERE p.id = ? GROUP BY p.id`, id)
 	project, err := scanProject(row)
@@ -161,7 +261,10 @@ func (s *Store) GetProject(ctx context.Context, id string) (Project, error) {
 
 func (s *Store) GetProjectByKeyHash(ctx context.Context, hash string) (Project, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT p.id, p.name, p.base_url, p.upstream_key_enc,
-		p.api_key_enc, p.api_key_prefix, p.created_at, p.updated_at, COUNT(r.id)
+		p.api_key_enc, p.api_key_prefix, p.created_at, p.updated_at, COUNT(r.id),
+		p.capture_enabled, p.capture_session_id, p.capture_started_at, p.capture_paused_at,
+		(SELECT COUNT(*) FROM request_logs cr WHERE cr.project_id = p.id
+		 AND cr.capture_session_id = p.capture_session_id)
 		FROM projects p LEFT JOIN request_logs r ON r.project_id = p.id
 		WHERE p.api_key_hash = ? GROUP BY p.id`, hash)
 	project, err := scanProject(row)
@@ -178,8 +281,11 @@ type scanner interface {
 func scanProject(row scanner) (Project, error) {
 	var project Project
 	var created, updated string
+	var captureEnabled int
+	var captureStarted, capturePaused sql.NullString
 	err := row.Scan(&project.ID, &project.Name, &project.BaseURL, &project.UpstreamKeyEncrypted,
-		&project.ProjectKeyEncrypted, &project.APIKeyPrefix, &created, &updated, &project.RequestCount)
+		&project.ProjectKeyEncrypted, &project.APIKeyPrefix, &created, &updated, &project.RequestCount,
+		&captureEnabled, &project.CaptureSessionID, &captureStarted, &capturePaused, &project.CaptureRequestCount)
 	if err != nil {
 		return Project{}, err
 	}
@@ -188,7 +294,32 @@ func scanProject(row scanner) (Project, error) {
 		return Project{}, err
 	}
 	project.UpdatedAt, err = parseTime(updated)
-	return project, err
+	if err != nil {
+		return Project{}, err
+	}
+	if captureStarted.Valid {
+		value, parseErr := parseTime(captureStarted.String)
+		if parseErr != nil {
+			return Project{}, parseErr
+		}
+		project.CaptureStartedAt = &value
+	}
+	if capturePaused.Valid {
+		value, parseErr := parseTime(capturePaused.String)
+		if parseErr != nil {
+			return Project{}, parseErr
+		}
+		project.CapturePausedAt = &value
+	}
+	switch {
+	case captureEnabled != 0:
+		project.CaptureState = "capturing"
+	case project.CaptureSessionID != "":
+		project.CaptureState = "paused"
+	default:
+		project.CaptureState = "idle"
+	}
+	return project, nil
 }
 
 type UpdateProjectParams struct {
@@ -247,22 +378,158 @@ func (s *Store) DeleteProject(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *Store) StartCapture(ctx context.Context, projectID, newSessionID string) (Project, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Project{}, err
+	}
+	defer tx.Rollback()
+	var enabled int
+	var sessionID string
+	if err := tx.QueryRowContext(ctx, `SELECT capture_enabled, capture_session_id FROM projects WHERE id = ?`, projectID).Scan(&enabled, &sessionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Project{}, ErrNotFound
+		}
+		return Project{}, err
+	}
+	if enabled == 0 || sessionID == "" {
+		if sessionID == "" {
+			sessionID = newSessionID
+			_, err = tx.ExecContext(ctx, `UPDATE projects SET capture_enabled = 1, capture_session_id = ?,
+				capture_started_at = ?, capture_paused_at = NULL WHERE id = ?`, sessionID,
+				formatTime(time.Now().UTC()), projectID)
+		} else {
+			_, err = tx.ExecContext(ctx, `UPDATE projects SET capture_enabled = 1,
+				capture_paused_at = NULL WHERE id = ?`, projectID)
+		}
+		if err != nil {
+			return Project{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Project{}, err
+	}
+	return s.GetProject(ctx, projectID)
+}
+
+func (s *Store) PauseCapture(ctx context.Context, projectID string) (Project, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE projects SET capture_enabled = 0, capture_paused_at = ?
+		WHERE id = ? AND capture_enabled = 1`, formatTime(time.Now().UTC()), projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if changed, _ := result.RowsAffected(); changed == 0 {
+		if _, err := s.GetProject(ctx, projectID); err != nil {
+			return Project{}, err
+		}
+	}
+	return s.GetProject(ctx, projectID)
+}
+
+func (s *Store) SaveCaptureGroup(ctx context.Context, projectID, groupID, name string) (CaptureGroup, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return CaptureGroup{}, err
+	}
+	defer tx.Rollback()
+	var enabled int
+	var sessionID string
+	var started, paused sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT capture_enabled, capture_session_id,
+		capture_started_at, capture_paused_at FROM projects WHERE id = ?`, projectID).
+		Scan(&enabled, &sessionID, &started, &paused); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return CaptureGroup{}, ErrNotFound
+		}
+		return CaptureGroup{}, err
+	}
+	if enabled != 0 {
+		return CaptureGroup{}, ErrCaptureNotPaused
+	}
+	if sessionID == "" || !started.Valid {
+		return CaptureGroup{}, ErrCaptureSessionGone
+	}
+	endedAt := time.Now().UTC()
+	if paused.Valid {
+		if value, parseErr := parseTime(paused.String); parseErr == nil {
+			endedAt = value
+		}
+	}
+	createdAt := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO capture_groups
+		(id, project_id, session_id, name, started_at, ended_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, groupID, projectID, sessionID, name, started.String,
+		formatTime(endedAt), formatTime(createdAt)); err != nil {
+		return CaptureGroup{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE projects SET capture_session_id = '',
+		capture_started_at = NULL, capture_paused_at = NULL WHERE id = ?`, projectID); err != nil {
+		return CaptureGroup{}, err
+	}
+	var requestCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_logs WHERE project_id = ?
+		AND capture_session_id = ?`, projectID, sessionID).Scan(&requestCount); err != nil {
+		return CaptureGroup{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CaptureGroup{}, err
+	}
+	startedAt, err := parseTime(started.String)
+	if err != nil {
+		return CaptureGroup{}, err
+	}
+	return CaptureGroup{ID: groupID, ProjectID: projectID, Name: name, StartedAt: startedAt,
+		EndedAt: endedAt, CreatedAt: createdAt, RequestCount: requestCount}, nil
+}
+
+func (s *Store) ListCaptureGroups(ctx context.Context, projectID string) ([]CaptureGroup, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT g.id, g.project_id, g.name, g.started_at,
+		g.ended_at, g.created_at, COUNT(r.id) FROM capture_groups g
+		LEFT JOIN request_logs r ON r.project_id = g.project_id AND r.capture_session_id = g.session_id
+		WHERE g.project_id = ? GROUP BY g.id ORDER BY g.created_at DESC, g.id DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	groups := make([]CaptureGroup, 0)
+	for rows.Next() {
+		var group CaptureGroup
+		var started, ended, created string
+		if err := rows.Scan(&group.ID, &group.ProjectID, &group.Name, &started, &ended,
+			&created, &group.RequestCount); err != nil {
+			return nil, err
+		}
+		if group.StartedAt, err = parseTime(started); err != nil {
+			return nil, err
+		}
+		if group.EndedAt, err = parseTime(ended); err != nil {
+			return nil, err
+		}
+		if group.CreatedAt, err = parseTime(created); err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
+	return groups, rows.Err()
+}
+
 type StartRequestParams struct {
-	ID             string
-	ProjectID      string
-	Method         string
-	Path           string
-	UpstreamURL    string
-	RequestHeaders jsonObject
-	StartedAt      time.Time
+	ID               string
+	ProjectID        string
+	Method           string
+	Path             string
+	UpstreamURL      string
+	RequestHeaders   jsonObject
+	StartedAt        time.Time
+	CaptureSessionID string
 }
 
 func (s *Store) StartRequest(ctx context.Context, params StartRequestParams) error {
 	headers, _ := json.Marshal(params.RequestHeaders)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO request_logs
-		(id, project_id, method, path, upstream_url, status, started_at, request_headers)
-		VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`, params.ID, params.ProjectID, params.Method,
-		params.Path, params.UpstreamURL, formatTime(params.StartedAt), string(headers))
+		(id, project_id, method, path, upstream_url, status, started_at, request_headers, capture_session_id)
+		VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)`, params.ID, params.ProjectID, params.Method,
+		params.Path, params.UpstreamURL, formatTime(params.StartedAt), string(headers), params.CaptureSessionID)
 	return err
 }
 
@@ -311,6 +578,7 @@ type ListRequestsParams struct {
 	Path      string
 	Model     string
 	Streaming *bool
+	GroupID   string
 }
 
 func (s *Store) ListRequests(ctx context.Context, params ListRequestsParams) (ListRequestsResult, error) {
@@ -335,6 +603,10 @@ func (s *Store) ListRequests(ctx context.Context, params ListRequestsParams) (Li
 		where = append(where, "streaming = ?")
 		args = append(args, boolInt(*params.Streaming))
 	}
+	if params.GroupID != "" {
+		where = append(where, `capture_session_id = (SELECT session_id FROM capture_groups WHERE id = ? AND project_id = ?)`)
+		args = append(args, params.GroupID, params.ProjectID)
+	}
 	if params.Cursor != "" {
 		startedAt, id, err := decodeCursor(params.Cursor)
 		if err != nil {
@@ -344,7 +616,11 @@ func (s *Store) ListRequests(ctx context.Context, params ListRequestsParams) (Li
 		args = append(args, startedAt, startedAt, id)
 	}
 	args = append(args, params.Limit+1)
-	query := `SELECT id, project_id, method, path, model, streaming, status, http_status,
+	query := `SELECT id, project_id,
+		COALESCE((SELECT g.id FROM capture_groups g
+			WHERE g.project_id = request_logs.project_id
+			AND g.session_id = request_logs.capture_session_id), ''),
+		method, path, model, streaming, status, http_status,
 		started_at, finished_at, duration_ms, request_truncated, response_truncated,
 		request_bytes, response_bytes FROM request_logs WHERE ` + strings.Join(where, " AND ") +
 		` ORDER BY started_at DESC, id DESC LIMIT ?`
@@ -360,7 +636,7 @@ func (s *Store) ListRequests(ctx context.Context, params ListRequestsParams) (Li
 		var started string
 		var finished sql.NullString
 		var httpStatus sql.NullInt64
-		if err := rows.Scan(&item.ID, &item.ProjectID, &item.Method, &item.Path, &item.Model,
+		if err := rows.Scan(&item.ID, &item.ProjectID, &item.GroupID, &item.Method, &item.Path, &item.Model,
 			&stream, &item.Status, &httpStatus, &started, &finished, &item.DurationMS,
 			&reqTrunc, &respTrunc, &item.RequestBytes, &item.ResponseBytes); err != nil {
 			return ListRequestsResult{}, err
@@ -441,11 +717,26 @@ func (s *Store) GetRequest(ctx context.Context, id string) (RequestLog, error) {
 }
 
 func (s *Store) ClearProjectRequests(ctx context.Context, projectID string) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM request_logs WHERE project_id = ? AND status != 'running'`, projectID)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `DELETE FROM request_logs WHERE project_id = ? AND status != 'running'`, projectID)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM capture_groups WHERE project_id = ?`, projectID); err != nil {
+		return 0, err
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return deleted, nil
 }
 
 func (s *Store) Cleanup(ctx context.Context, retentionDays, maxPerProject int) error {

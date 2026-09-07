@@ -142,6 +142,26 @@ func (server *Server) routeAPI(writer http.ResponseWriter, request *http.Request
 				default:
 					server.methodNotAllowed(writer, http.MethodGet, http.MethodDelete)
 				}
+			case "capture-groups":
+				switch request.Method {
+				case http.MethodGet:
+					server.listCaptureGroups(writer, request, projectID)
+				case http.MethodPost:
+					server.saveCaptureGroup(writer, request, projectID)
+				default:
+					server.methodNotAllowed(writer, http.MethodGet, http.MethodPost)
+				}
+			default:
+				writeAPIError(writer, http.StatusNotFound, "not found")
+			}
+			return
+		}
+		if len(segments) == 4 && segments[2] == "capture" {
+			switch segments[3] {
+			case "start":
+				server.requireMethod(writer, request, http.MethodPost, func() { server.startCapture(writer, request, projectID) })
+			case "pause":
+				server.requireMethod(writer, request, http.MethodPost, func() { server.pauseCapture(writer, request, projectID) })
 			default:
 				writeAPIError(writer, http.StatusNotFound, "not found")
 			}
@@ -297,6 +317,10 @@ func handleStoreError(writer http.ResponseWriter, err error) {
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "unique constraint") {
 		writeAPIError(writer, http.StatusConflict, "a project with that name already exists")
+		return
+	}
+	if errors.Is(err, ErrCaptureNotPaused) || errors.Is(err, ErrCaptureSessionGone) {
+		writeAPIError(writer, http.StatusConflict, err.Error())
 		return
 	}
 	writeAPIError(writer, http.StatusInternalServerError, "internal server error")

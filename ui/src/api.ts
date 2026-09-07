@@ -7,11 +7,26 @@ export type Project = {
   createdAt: string;
   updatedAt: string;
   requestCount: number;
+  captureState: "capturing" | "paused" | "idle";
+  captureStartedAt: string | null;
+  capturePausedAt: string | null;
+  captureRequestCount: number;
+};
+
+export type CaptureGroup = {
+  id: string;
+  projectId: string;
+  name: string;
+  startedAt: string;
+  endedAt: string;
+  createdAt: string;
+  requestCount: number;
 };
 
 export type RequestSummary = {
   id: string;
   projectId: string;
+  groupId?: string;
   method: string;
   path: string;
   model: string;
@@ -43,6 +58,7 @@ export type RequestFilters = {
   path?: string;
   model?: string;
   streaming?: string;
+  groupId?: string;
 };
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
@@ -70,6 +86,10 @@ export const api = {
   testUpstream: (id: string) =>
     call<{ ok: boolean; status?: number; durationMs: number; error?: string }>(`/api/projects/${id}/test-upstream`, { method: "POST" }),
   clearRequests: (id: string) => call<{ deleted: number }>(`/api/projects/${id}/requests`, { method: "DELETE" }),
+  startCapture: (id: string) => call<Project>(`/api/projects/${id}/capture/start`, { method: "POST" }),
+  pauseCapture: (id: string) => call<Project>(`/api/projects/${id}/capture/pause`, { method: "POST" }),
+  listCaptureGroups: (id: string) => call<{ items: CaptureGroup[] }>(`/api/projects/${id}/capture-groups`),
+  saveCaptureGroup: (id: string, name: string) => call<CaptureGroup>(`/api/projects/${id}/capture-groups`, { method: "POST", body: JSON.stringify({ name }) }),
   listRequests: (projectId: string, filters: RequestFilters = {}, cursor = "") => {
     const search = new URLSearchParams({ limit: "50" });
     if (cursor) search.set("cursor", cursor);
@@ -78,4 +98,3 @@ export const api = {
   },
   getRequest: (id: string) => call<RequestDetail>(`/api/requests/${id}`),
 };
-

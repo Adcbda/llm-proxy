@@ -8,6 +8,7 @@
 - `GET /v1/models`
 - 模型名、消息、工具定义和厂商扩展字段原样转发，不做模型白名单校验
 - 同时记录非流式响应和流式 SSE；流式响应额外聚合 assistant 内容、refusal、function/tool calls、finish reason 与 usage
+- 可按项目开启或暂停抓包；暂停后可将本轮请求保存为命名分组，并按分组回看
 - SQLite 持久化；项目 Key 与上游 Key 使用 AES-256-GCM 加密
 - 默认仅监听 `127.0.0.1:8080`，管理台不包含登录系统
 
@@ -96,12 +97,15 @@ BaseURL 按 SDK 的 API 根地址处理。例如上游填写 `https://api.openai
 - `POST /api/projects/{id}/reveal-key`
 - `POST /api/projects/{id}/rotate-key`
 - `POST /api/projects/{id}/test-upstream`
+- `POST /api/projects/{id}/capture/start`
+- `POST /api/projects/{id}/capture/pause`
+- `GET/POST /api/projects/{id}/capture-groups`
 - `GET/DELETE /api/projects/{id}/requests`
 - `GET /api/requests/{id}`
 - `GET /api/events?project_id=...`
 - `GET /healthz`
 
-项目和管理 API 响应不启用跨域。请求列表使用 `cursor` 游标分页，支持 `status`、`path`、`model` 和 `streaming` 查询参数。
+项目和管理 API 响应不启用跨域。请求列表使用 `cursor` 游标分页，支持 `status`、`path`、`model`、`streaming` 和 `groupId` 查询参数。暂停抓包只停止记录新请求，不影响代理转发，也不会中断暂停前已经开始的请求。
 
 ## 验证
 
@@ -111,4 +115,3 @@ make test-e2e
 ```
 
 后端测试包含加密、SSE 聚合、Header 脱敏、透明转发和“日志截断但响应继续完整转发”。浏览器端到端测试会启动本地伪上游，验证项目创建、代理请求、详情展示、连接测试、Key 轮换与项目删除。
-
