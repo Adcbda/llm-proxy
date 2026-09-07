@@ -305,6 +305,11 @@ func (server *Server) getRequest(writer http.ResponseWriter, request *http.Reque
 		log.ResponseBody, log.ResponseBytes, log.ResponseTruncated = string(responseBody), responseBytes, responseTruncated
 		log.Live = true
 	}
+	log.ToolTimingEstimate, err = server.store.EstimateToolTiming(request.Context(), log)
+	if err != nil {
+		handleStoreError(writer, err)
+		return
+	}
 	writeJSON(writer, http.StatusOK, log)
 }
 

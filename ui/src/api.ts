@@ -51,6 +51,11 @@ export type RequestDetail = RequestSummary & {
   responseBody: string;
   aggregatedResponse?: string;
   live: boolean;
+  toolTimingEstimate?: {
+    durationMs: number;
+    previousRequestId: string;
+    toolCallIds: string[];
+  };
 };
 
 export type RequestFilters = {

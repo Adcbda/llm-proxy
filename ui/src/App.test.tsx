@@ -98,4 +98,51 @@ describe("App", () => {
     expect(secondRow).toHaveClass("capture-group-row");
     expect(firstRow.getAttribute("style")).not.toBe(secondRow.getAttribute("style"));
   });
+
+  it("shows the model duration and inferred tool batch duration", async () => {
+    const now = new Date().toISOString();
+    const project = {
+      id: "prj_test", name: "Timing test", baseUrl: "http://upstream.test/v1",
+      upstreamApiKeyMasked: "", apiKeyPrefix: "llmp_test", createdAt: now, updatedAt: now,
+      requestCount: 1, captureState: "capturing", captureStartedAt: now, capturePausedAt: null,
+      captureRequestCount: 1,
+    };
+    const summary = {
+      id: "req_timing", projectId: project.id, method: "POST", path: "/v1/chat/completions", model: "tool-model",
+      streaming: false, status: "completed", httpStatus: 200, startedAt: now, finishedAt: now,
+      durationMs: 1250, requestTruncated: false, responseTruncated: false, requestBytes: 100, responseBytes: 50,
+    };
+    const detail = {
+      ...summary,
+      upstreamUrl: "http://upstream.test/v1/chat/completions", error: "",
+      requestHeaders: {}, responseHeaders: {}, live: false,
+      requestBody: JSON.stringify({ messages: [
+        { role: "tool", tool_call_id: "call_a", content: "one" },
+        { role: "tool", tool_call_id: "call_b", content: "two" },
+      ] }),
+      responseBody: JSON.stringify({ choices: [{ message: { role: "assistant", content: "done" } }] }),
+      aggregatedResponse: "",
+      toolTimingEstimate: { durationMs: 875, previousRequestId: "req_previous", toolCallIds: ["call_a", "call_b"] },
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/projects") return { ok: true, json: async () => ({ items: [project] }) };
+      if (url.includes("/capture-groups")) return { ok: true, json: async () => ({ items: [] }) };
+      if (url === "/api/requests/req_timing") return { ok: true, json: async () => detail };
+      if (url.includes("/requests")) return { ok: true, json: async () => ({ items: [summary] }) };
+      return { ok: false, status: 404, json: async () => ({}) };
+    }));
+    class EventSourceStub {
+      addEventListener() { /* no-op */ }
+      close() { /* no-op */ }
+    }
+    vi.stubGlobal("EventSource", EventSourceStub);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+
+    const modelCell = await screen.findByText("tool-model");
+    fireEvent.click(modelCell.closest("tr")!);
+    expect(await screen.findByText("UPSTREAM RESPONSE · 本轮模型 1.25 s")).toBeInTheDocument();
+    expect(await screen.findAllByText("推算 ≈ 875 ms · 批次")).toHaveLength(2);
+  });
 });

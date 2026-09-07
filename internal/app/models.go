@@ -31,29 +31,41 @@ type CaptureGroup struct {
 }
 
 type RequestLog struct {
-	ID                 string     `json:"id"`
-	ProjectID          string     `json:"projectId"`
-	Method             string     `json:"method"`
-	Path               string     `json:"path"`
-	UpstreamURL        string     `json:"upstreamUrl"`
-	Model              string     `json:"model"`
-	Streaming          bool       `json:"streaming"`
-	Status             string     `json:"status"`
-	HTTPStatus         *int       `json:"httpStatus"`
-	Error              string     `json:"error,omitempty"`
-	StartedAt          time.Time  `json:"startedAt"`
-	FinishedAt         *time.Time `json:"finishedAt"`
-	DurationMS         int64      `json:"durationMs"`
-	RequestHeaders     jsonObject `json:"requestHeaders"`
-	ResponseHeaders    jsonObject `json:"responseHeaders"`
-	RequestBody        string     `json:"requestBody"`
-	ResponseBody       string     `json:"responseBody"`
-	AggregatedResponse string     `json:"aggregatedResponse,omitempty"`
-	RequestTruncated   bool       `json:"requestTruncated"`
-	ResponseTruncated  bool       `json:"responseTruncated"`
-	RequestBytes       int64      `json:"requestBytes"`
-	ResponseBytes      int64      `json:"responseBytes"`
-	Live               bool       `json:"live"`
+	ID                 string              `json:"id"`
+	ProjectID          string              `json:"projectId"`
+	Method             string              `json:"method"`
+	Path               string              `json:"path"`
+	UpstreamURL        string              `json:"upstreamUrl"`
+	Model              string              `json:"model"`
+	Streaming          bool                `json:"streaming"`
+	Status             string              `json:"status"`
+	HTTPStatus         *int                `json:"httpStatus"`
+	Error              string              `json:"error,omitempty"`
+	StartedAt          time.Time           `json:"startedAt"`
+	FinishedAt         *time.Time          `json:"finishedAt"`
+	DurationMS         int64               `json:"durationMs"`
+	RequestHeaders     jsonObject          `json:"requestHeaders"`
+	ResponseHeaders    jsonObject          `json:"responseHeaders"`
+	RequestBody        string              `json:"requestBody"`
+	ResponseBody       string              `json:"responseBody"`
+	AggregatedResponse string              `json:"aggregatedResponse,omitempty"`
+	RequestTruncated   bool                `json:"requestTruncated"`
+	ResponseTruncated  bool                `json:"responseTruncated"`
+	RequestBytes       int64               `json:"requestBytes"`
+	ResponseBytes      int64               `json:"responseBytes"`
+	Live               bool                `json:"live"`
+	ToolTimingEstimate *ToolTimingEstimate `json:"toolTimingEstimate,omitempty"`
+	CaptureSessionID   string              `json:"-"`
+}
+
+// ToolTimingEstimate is the client-side gap between a response containing
+// tool calls and the next request containing their results. The proxy cannot
+// observe tool execution directly, so the duration also includes agent
+// scheduling and request preparation overhead.
+type ToolTimingEstimate struct {
+	DurationMS        int64    `json:"durationMs"`
+	PreviousRequestID string   `json:"previousRequestId"`
+	ToolCallIDs       []string `json:"toolCallIds"`
 }
 
 type RequestSummary struct {

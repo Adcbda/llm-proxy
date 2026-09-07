@@ -401,22 +401,23 @@ function MessagesView({ detail, onCopy }: { detail: RequestDetail; onCopy: (valu
     return <div className="models-view">{models.length ? models.map((model) => <div className="model-card" key={model.id}><div><Database size={16} /><strong>{model.id}</strong></div><span>{model.owned_by || "unknown owner"}</span></div>) : <div className="inline-empty">响应中没有可识别的模型列表，请查看原始包。</div>}</div>;
   }
   const messages = extractMessages(detail);
+  const timedToolCallIDs = new Set(detail.toolTimingEstimate?.toolCallIds || []);
   return <div className="message-flow">
     <div className="flow-label"><span>REQUEST MESSAGES</span><b>{messages.request.length}</b></div>
-    {messages.request.map((message, index) => <MessageCard key={`request-${index}`} message={message} index={index} onCopy={onCopy} />)}
-    <div className="flow-divider"><span>UPSTREAM RESPONSE</span></div>
+    {messages.request.map((message, index) => <MessageCard key={`request-${index}`} message={message} index={index} toolTiming={message.tool_call_id && timedToolCallIDs.has(message.tool_call_id) ? detail.toolTimingEstimate : undefined} onCopy={onCopy} />)}
+    <div className="flow-divider"><span>UPSTREAM RESPONSE · 本轮模型 {detail.status === "running" ? "…" : formatDuration(detail.durationMs)}</span></div>
     {messages.response.map((message, index) => <MessageCard key={`response-${index}`} message={message} index={index} response onCopy={onCopy} />)}
     {!messages.response.length && <div className="inline-empty">{detail.status === "running" ? "正在等待完整消息…" : "没有可识别的 message，请查看原始响应。"}</div>}
   </div>;
 }
 
-function MessageCard({ message, index, response = false, onCopy }: { message: InspectorMessage; index: number; response?: boolean; onCopy: (value: string, message?: string) => void }) {
+function MessageCard({ message, index, response = false, toolTiming, onCopy }: { message: InspectorMessage; index: number; response?: boolean; toolTiming?: RequestDetail["toolTimingEstimate"]; onCopy: (value: string, message?: string) => void }) {
   const role = message.role || "unknown";
   const content = typeof message.content === "string" ? message.content : message.content == null ? "" : JSON.stringify(message.content, null, 2);
   const parsedContent = parseEmbeddedJSON(message.content);
   const structuredToolResult = (role === "tool" || role === "function") && parsedContent.isJSON;
   return <article className={`message-card role-${role}`}>
-    <header><span className="message-index">{response ? "R" : index + 1}</span><Badge tone={role === "assistant" ? "cyan" : role === "tool" || role === "function" ? "purple" : role === "system" || role === "developer" ? "amber" : "neutral"}>{role}</Badge>{message.name && <span className="muted">{message.name}</span>}{message.tool_call_id && <code>{message.tool_call_id}</code>}</header>
+    <header><span className="message-index">{response ? "R" : index + 1}</span><Badge tone={role === "assistant" ? "cyan" : role === "tool" || role === "function" ? "purple" : role === "system" || role === "developer" ? "amber" : "neutral"}>{role}</Badge>{message.name && <span className="muted">{message.name}</span>}{toolTiming && <span className="tool-timing" title={`由上一轮模型响应完成到本轮请求开始推算，包含 Agent 调度和请求准备开销。${toolTiming.toolCallIds.length > 1 ? " 多个工具共享同一批次耗时。" : ""}`}>推算 ≈ {formatDuration(toolTiming.durationMs)}{toolTiming.toolCallIds.length > 1 ? " · 批次" : ""}</span>}{message.tool_call_id && <code>{message.tool_call_id}</code>}</header>
     {content && !structuredToolResult && <pre className="message-content">{content}</pre>}
     {structuredToolResult && <ToolResultCard value={parsedContent.value} raw={content} onCopy={onCopy} />}
     {message.refusal != null && <StructuredField icon={<ShieldAlert size={14} />} label="refusal" value={message.refusal} />}

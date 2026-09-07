@@ -194,6 +194,8 @@ code, pre, .mono { font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, mon
 .message-card.role-tool, .message-card.role-function { border-left-color: var(--purple); }
 .message-card header { display: flex; align-items: center; gap: 7px; }
 .message-card header code { margin-left: auto; color: var(--dim); font-size: 8px; }
+.tool-timing { margin-left: auto; padding: 3px 6px; color: var(--amber); border: 1px solid rgba(231,185,103,.22); background: var(--amber-soft); border-radius: 5px; white-space: nowrap; font: 500 8px "IBM Plex Mono", monospace; }
+.tool-timing + code { margin-left: 0 !important; }
 .message-index { color: var(--dim); font: 500 9px "IBM Plex Mono", monospace; }
 .message-content { margin: 11px 0 0; color: #d8e1e9; white-space: pre-wrap; overflow-wrap: anywhere; font: 400 10px/1.65 "IBM Plex Mono", monospace; }
 .message-card.role-tool .message-content, .message-card.role-function .message-content { max-height: 320px; overflow: auto; }

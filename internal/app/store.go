@@ -673,7 +673,7 @@ func (s *Store) GetRequest(ctx context.Context, id string) (RequestLog, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id, project_id, method, path, upstream_url, model,
 		streaming, status, http_status, error, started_at, finished_at, duration_ms,
 		request_headers, response_headers, request_body, response_body, aggregated_response,
-		request_truncated, response_truncated, request_bytes, response_bytes
+		request_truncated, response_truncated, request_bytes, response_bytes, capture_session_id
 		FROM request_logs WHERE id = ?`, id)
 	var log RequestLog
 	var stream, reqTrunc, respTrunc int
@@ -685,7 +685,7 @@ func (s *Store) GetRequest(ctx context.Context, id string) (RequestLog, error) {
 	err := row.Scan(&log.ID, &log.ProjectID, &log.Method, &log.Path, &log.UpstreamURL, &log.Model,
 		&stream, &log.Status, &httpStatus, &log.Error, &started, &finished, &log.DurationMS,
 		&reqHeaders, &respHeaders, &reqBody, &respBody, &log.AggregatedResponse,
-		&reqTrunc, &respTrunc, &log.RequestBytes, &log.ResponseBytes)
+		&reqTrunc, &respTrunc, &log.RequestBytes, &log.ResponseBytes, &log.CaptureSessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RequestLog{}, ErrNotFound
 	}
@@ -714,6 +714,115 @@ func (s *Store) GetRequest(ctx context.Context, id string) (RequestLog, error) {
 	_ = json.Unmarshal([]byte(reqHeaders), &log.RequestHeaders)
 	_ = json.Unmarshal([]byte(respHeaders), &log.ResponseHeaders)
 	return log, nil
+}
+
+func (s *Store) EstimateToolTiming(ctx context.Context, current RequestLog) (*ToolTimingEstimate, error) {
+	if current.Path != "/v1/chat/completions" || current.CaptureSessionID == "" {
+		return nil, nil
+	}
+	resultIDs := toolResultIDs(current.RequestBody)
+	if len(resultIDs) == 0 {
+		return nil, nil
+	}
+
+	var previousID, finished string
+	var responseBody []byte
+	var aggregatedResponse string
+	err := s.db.QueryRowContext(ctx, `SELECT id, finished_at, response_body, aggregated_response
+		FROM request_logs
+		WHERE project_id = ? AND capture_session_id = ? AND id != ?
+			AND path = '/v1/chat/completions' AND started_at < ? AND finished_at IS NOT NULL
+		ORDER BY started_at DESC, id DESC LIMIT 1`, current.ProjectID, current.CaptureSessionID,
+		current.ID, formatTime(current.StartedAt)).Scan(&previousID, &finished, &responseBody, &aggregatedResponse)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	response := string(responseBody)
+	if aggregatedResponse != "" {
+		response = aggregatedResponse
+	}
+	callIDs := toolCallIDs(response)
+	matched := intersectToolCallIDs(resultIDs, callIDs)
+	if len(matched) == 0 {
+		return nil, nil
+	}
+	finishedAt, err := parseTime(finished)
+	if err != nil {
+		return nil, err
+	}
+	duration := current.StartedAt.Sub(finishedAt)
+	if duration < 0 {
+		return nil, nil
+	}
+	return &ToolTimingEstimate{
+		DurationMS: duration.Milliseconds(), PreviousRequestID: previousID, ToolCallIDs: matched,
+	}, nil
+}
+
+func toolResultIDs(body string) []string {
+	var payload struct {
+		Messages []struct {
+			Role       string `json:"role"`
+			ToolCallID string `json:"tool_call_id"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal([]byte(body), &payload) != nil {
+		return nil
+	}
+	ids := make([]string, 0)
+	for _, message := range payload.Messages {
+		if message.Role == "tool" && message.ToolCallID != "" {
+			ids = append(ids, message.ToolCallID)
+		}
+	}
+	return ids
+}
+
+func toolCallIDs(body string) []string {
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				ToolCalls []struct {
+					ID string `json:"id"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal([]byte(body), &payload) != nil {
+		return nil
+	}
+	ids := make([]string, 0)
+	for _, choice := range payload.Choices {
+		for _, call := range choice.Message.ToolCalls {
+			if call.ID != "" {
+				ids = append(ids, call.ID)
+			}
+		}
+	}
+	return ids
+}
+
+func intersectToolCallIDs(resultIDs, callIDs []string) []string {
+	available := make(map[string]struct{}, len(callIDs))
+	for _, id := range callIDs {
+		available[id] = struct{}{}
+	}
+	matched := make([]string, 0, len(resultIDs))
+	seen := make(map[string]struct{}, len(resultIDs))
+	for _, id := range resultIDs {
+		if _, ok := available[id]; !ok {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		matched = append(matched, id)
+	}
+	return matched
 }
 
 func (s *Store) ClearProjectRequests(ctx context.Context, projectID string) (int64, error) {
