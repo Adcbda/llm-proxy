@@ -167,6 +167,10 @@ func (server *Server) routeAPI(writer http.ResponseWriter, request *http.Request
 			}
 			return
 		}
+		if len(segments) == 4 && segments[2] == "requests" && segments[3] == "batch-delete" {
+			server.requireMethod(writer, request, http.MethodPost, func() { server.deleteRequests(writer, request, projectID) })
+			return
+		}
 	}
 	if len(segments) == 2 && segments[0] == "requests" {
 		server.requireMethod(writer, request, http.MethodGet, func() { server.getRequest(writer, request, segments[1]) })

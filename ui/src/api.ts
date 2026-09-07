@@ -91,6 +91,7 @@ export const api = {
   testUpstream: (id: string) =>
     call<{ ok: boolean; status?: number; durationMs: number; error?: string }>(`/api/projects/${id}/test-upstream`, { method: "POST" }),
   clearRequests: (id: string) => call<{ deleted: number }>(`/api/projects/${id}/requests`, { method: "DELETE" }),
+  deleteRequests: (id: string, ids: string[]) => call<{ deleted: number }>(`/api/projects/${id}/requests/batch-delete`, { method: "POST", body: JSON.stringify({ ids }) }),
   startCapture: (id: string) => call<Project>(`/api/projects/${id}/capture/start`, { method: "POST" }),
   pauseCapture: (id: string) => call<Project>(`/api/projects/${id}/capture/pause`, { method: "POST" }),
   listCaptureGroups: (id: string) => call<{ items: CaptureGroup[] }>(`/api/projects/${id}/capture-groups`),

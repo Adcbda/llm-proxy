@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
@@ -144,5 +144,56 @@ describe("App", () => {
     fireEvent.click(modelCell.closest("tr")!);
     expect(await screen.findByText("UPSTREAM RESPONSE · 本轮模型 1.25 s")).toBeInTheDocument();
     expect(await screen.findAllByText("推算 ≈ 875 ms · 批次")).toHaveLength(2);
+  });
+
+  it("selects completed requests and deletes them in one batch", async () => {
+    const now = new Date().toISOString();
+    const project = {
+      id: "prj_test", name: "Delete test", baseUrl: "http://upstream.test/v1",
+      upstreamApiKeyMasked: "", apiKeyPrefix: "llmp_test", createdAt: now, updatedAt: now,
+      requestCount: 3, captureState: "capturing" as const, captureStartedAt: now, capturePausedAt: null,
+      captureRequestCount: 3,
+    };
+    const request = (id: string, status: "completed" | "running") => ({
+      id, projectId: project.id, method: "POST", path: "/v1/chat/completions", model: id,
+      streaming: false, status, httpStatus: status === "completed" ? 200 : null, startedAt: now,
+      finishedAt: status === "completed" ? now : null, durationMs: 10, requestTruncated: false,
+      responseTruncated: false, requestBytes: 10, responseBytes: 20,
+    });
+    let requests = [request("req_delete_a", "completed"), request("req_delete_b", "completed"), request("req_running", "running")];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/requests/batch-delete") && init?.method === "POST") {
+        const inputBody = JSON.parse(String(init.body)) as { ids: string[] };
+        requests = requests.filter((item) => !inputBody.ids.includes(item.id));
+        return { ok: true, json: async () => ({ deleted: inputBody.ids.length }) };
+      }
+      if (url === "/api/projects") return { ok: true, json: async () => ({ items: [project] }) };
+      if (url.includes("/capture-groups")) return { ok: true, json: async () => ({ items: [] }) };
+      if (url.includes("/requests")) return { ok: true, json: async () => ({ items: requests }) };
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+    class EventSourceStub {
+      addEventListener() { /* no-op */ }
+      close() { /* no-op */ }
+    }
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("EventSource", EventSourceStub);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+
+    const currentApp = within(view.container);
+    expect(await currentApp.findByRole("checkbox", { name: "选择请求 req_running" })).toBeDisabled();
+    const selectPage = currentApp.getByRole("checkbox", { name: "选择当前页请求" });
+    fireEvent.click(selectPage);
+    expect(currentApp.getByRole("checkbox", { name: "选择请求 req_delete_a" })).toBeChecked();
+    expect(currentApp.getByRole("checkbox", { name: "选择请求 req_delete_b" })).toBeChecked();
+    fireEvent.click(currentApp.getByRole("button", { name: "删除 (2)" }));
+
+    expect(await currentApp.findByText("已删除 2 条请求")).toBeInTheDocument();
+    expect(window.confirm).toHaveBeenCalledWith("确定删除选中的 2 条请求吗？此操作不可恢复。");
+    const deleteCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/requests/batch-delete"));
+    expect(JSON.parse(String(deleteCall?.[1]?.body))).toEqual({ ids: ["req_delete_a", "req_delete_b"] });
   });
 });

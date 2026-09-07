@@ -21,6 +21,10 @@ type captureGroupInput struct {
 	Name string `json:"name"`
 }
 
+type deleteRequestsInput struct {
+	IDs []string `json:"ids"`
+}
+
 func (server *Server) listProjects(writer http.ResponseWriter, request *http.Request) {
 	projects, err := server.store.ListProjects(request.Context())
 	if err != nil {
@@ -320,6 +324,42 @@ func (server *Server) clearRequests(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	server.events.Publish(LiveEvent{Type: "requests_cleared", ProjectID: projectID})
+	writeJSON(writer, http.StatusOK, map[string]any{"deleted": deleted})
+}
+
+func (server *Server) deleteRequests(writer http.ResponseWriter, request *http.Request, projectID string) {
+	var input deleteRequestsInput
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	if len(input.IDs) == 0 {
+		writeAPIError(writer, http.StatusBadRequest, "ids must contain at least one request id")
+		return
+	}
+	if len(input.IDs) > 100 {
+		writeAPIError(writer, http.StatusBadRequest, "ids cannot contain more than 100 request ids")
+		return
+	}
+	ids := make([]string, 0, len(input.IDs))
+	seen := make(map[string]struct{}, len(input.IDs))
+	for _, rawID := range input.IDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			writeAPIError(writer, http.StatusBadRequest, "request ids cannot be empty")
+			return
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	deleted, err := server.store.DeleteRequests(request.Context(), projectID, ids)
+	if err != nil {
+		handleStoreError(writer, err)
+		return
+	}
+	server.events.Publish(LiveEvent{Type: "requests_deleted", ProjectID: projectID})
 	writeJSON(writer, http.StatusOK, map[string]any{"deleted": deleted})
 }
 

@@ -848,6 +848,25 @@ func (s *Store) ClearProjectRequests(ctx context.Context, projectID string) (int
 	return deleted, nil
 }
 
+func (s *Store) DeleteRequests(ctx context.Context, projectID string, ids []string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, projectID)
+	for index, id := range ids {
+		placeholders[index] = "?"
+		args = append(args, id)
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM request_logs
+		WHERE project_id = ? AND status != 'running' AND id IN (`+strings.Join(placeholders, ", ")+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *Store) Cleanup(ctx context.Context, retentionDays, maxPerProject int) error {
 	if retentionDays > 0 {
 		cutoff := time.Now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)

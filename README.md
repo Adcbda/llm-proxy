@@ -102,6 +102,7 @@ BaseURL 按 SDK 的 API 根地址处理。例如上游填写 `https://api.openai
 - `POST /api/projects/{id}/capture/pause`
 - `GET/POST /api/projects/{id}/capture-groups`
 - `GET/DELETE /api/projects/{id}/requests`
+- `POST /api/projects/{id}/requests/batch-delete`（请求体为 `{ "ids": ["req_..."] }`，单次最多 100 条）
 - `GET /api/requests/{id}`
 - `GET /api/events?project_id=...`
 - `GET /healthz`

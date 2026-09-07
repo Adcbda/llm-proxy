@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import {
@@ -42,10 +42,19 @@ function StatusBadge({ status }: { status: string }) {
   return <Badge tone={tone}><span className={status === "running" ? "status-pulse" : "status-dot"} />{statusLabels[status] || status}</Badge>;
 }
 
+function SelectionCheckbox({ checked, indeterminate = false, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { indeterminate?: boolean }) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+  return <input ref={ref} type="checkbox" className="request-checkbox" checked={checked} {...props} />;
+}
+
 export default function App() {
   const queryClient = useQueryClient();
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedRequestId, setSelectedRequestId] = useState("");
+  const [selectedRequestIds, setSelectedRequestIds] = useState<Set<string>>(() => new Set());
   const [filters, setFilters] = useState<RequestFilters>({});
   const [cursor, setCursor] = useState("");
   const [cursorHistory, setCursorHistory] = useState<string[]>([]);
@@ -89,6 +98,7 @@ export default function App() {
     setCursor("");
     setCursorHistory([]);
     setSelectedRequestId("");
+    setSelectedRequestIds(new Set());
   }, [selectedProjectId, filters]);
 
   useEffect(() => {
@@ -108,6 +118,19 @@ export default function App() {
     refetchInterval: (query) => query.state.data?.status === "running" ? 750 : false,
   });
 
+  const deleteRequests = useMutation({
+    mutationFn: (ids: string[]) => api.deleteRequests(selectedProjectId, ids),
+    onSuccess: (result, ids) => {
+      if (ids.includes(selectedRequestId)) setSelectedRequestId("");
+      setSelectedRequestIds(new Set());
+      setCursor("");
+      setCursorHistory([]);
+      refreshCapture();
+      setToast(`已删除 ${result.deleted} 条请求`);
+    },
+    onError: (error: Error) => setToast(error.message),
+  });
+
   useEffect(() => {
     if (!selectedProjectId) return;
     const events = new EventSource(`/api/events?project_id=${encodeURIComponent(selectedProjectId)}`);
@@ -122,7 +145,7 @@ export default function App() {
         }
       } catch { /* keep the live connection resilient */ }
     };
-    ["request_started", "request_progress", "request_completed", "requests_cleared", "project_changed", "capture_changed"].forEach((name) => events.addEventListener(name, refresh as EventListener));
+    ["request_started", "request_progress", "request_completed", "requests_cleared", "requests_deleted", "project_changed", "capture_changed"].forEach((name) => events.addEventListener(name, refresh as EventListener));
     return () => events.close();
   }, [queryClient, selectedProjectId, selectedRequestId]);
 
@@ -133,7 +156,31 @@ export default function App() {
   }, [toast]);
 
   const columnHelper = createColumnHelper<RequestSummary>();
+  const pageRequests = requestsQuery.data?.items ?? emptyRequests;
+  const selectableRequestIds = useMemo(() => pageRequests.filter((item) => item.status !== "running").map((item) => item.id), [pageRequests]);
+  const selectedOnPage = selectableRequestIds.filter((id) => selectedRequestIds.has(id)).length;
+  const allSelectedOnPage = selectableRequestIds.length > 0 && selectedOnPage === selectableRequestIds.length;
+  const togglePageSelection = () => {
+    setSelectedRequestIds((current) => {
+      const next = new Set(current);
+      if (allSelectedOnPage) selectableRequestIds.forEach((id) => next.delete(id));
+      else selectableRequestIds.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+  const toggleRequestSelection = (id: string) => {
+    setSelectedRequestIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
   const columns = useMemo(() => [
+    columnHelper.display({
+      id: "select",
+      header: () => <SelectionCheckbox aria-label="选择当前页请求" checked={allSelectedOnPage} indeterminate={selectedOnPage > 0 && !allSelectedOnPage} disabled={selectableRequestIds.length === 0} onChange={togglePageSelection} onClick={(event) => event.stopPropagation()} />,
+      cell: (info) => <SelectionCheckbox aria-label={`选择请求 ${info.row.original.id}`} checked={selectedRequestIds.has(info.row.original.id)} disabled={info.row.original.status === "running"} title={info.row.original.status === "running" ? "运行中的请求不能删除" : undefined} onChange={() => toggleRequestSelection(info.row.original.id)} onClick={(event) => event.stopPropagation()} />,
+    }),
     columnHelper.accessor("status", { header: "状态", cell: (info) => <StatusBadge status={info.getValue()} /> }),
     columnHelper.accessor("path", { header: "接口", cell: (info) => <span className="endpoint"><Code2 size={14} />{info.getValue().replace("/v1/", "")}</span> }),
     columnHelper.accessor("model", { header: "模型", cell: (info) => <span className="model-name">{info.getValue() || "—"}</span> }),
@@ -143,8 +190,14 @@ export default function App() {
     columnHelper.accessor("startedAt", { header: "时间", cell: (info) => <span className="time-cell">{formatTime(info.getValue())}</span> }),
     columnHelper.display({ id: "size", header: "响应", cell: (info) => <span className="mono muted">{formatBytes(info.row.original.responseBytes)}</span> }),
     columnHelper.display({ id: "open", header: "", cell: () => <ChevronRight size={16} className="muted" /> }),
-  ], []);
-  const table = useReactTable({ data: requestsQuery.data?.items ?? emptyRequests, columns, getCoreRowModel: getCoreRowModel() });
+  ], [allSelectedOnPage, selectableRequestIds, selectedOnPage, selectedRequestIds]);
+  const table = useReactTable({ data: pageRequests, columns, getCoreRowModel: getCoreRowModel() });
+
+  const confirmDeleteRequests = () => {
+    const ids = [...selectedRequestIds];
+    if (!ids.length || !window.confirm(`确定删除选中的 ${ids.length} 条请求吗？此操作不可恢复。`)) return;
+    deleteRequests.mutate(ids);
+  };
 
   const selectProject = (id: string) => {
     setSelectedProjectId(id);
@@ -229,6 +282,7 @@ export default function App() {
               <Select aria-label="流式筛选" value={filters.streaming || ""} onChange={(event) => setFilters((value) => ({ ...value, streaming: event.target.value }))}>
                 <option value="">全部模式</option><option value="true">Stream</option><option value="false">JSON</option>
               </Select>
+              <Button variant="danger" className="batch-delete" disabled={selectedRequestIds.size === 0 || deleteRequests.isPending} onClick={confirmDeleteRequests}>{deleteRequests.isPending ? <Spinner /> : <Trash2 size={15} />}删除{selectedRequestIds.size > 0 ? ` (${selectedRequestIds.size})` : ""}</Button>
               <div className="search-field"><Search size={15} /><Input aria-label="模型筛选" placeholder="筛选模型…" value={filters.model || ""} onChange={(event) => setFilters((value) => ({ ...value, model: event.target.value }))} /></div>
               <Button variant="ghost" aria-label="刷新请求" onClick={() => requestsQuery.refetch()}><RefreshCw size={16} className={requestsQuery.isFetching ? "spin" : ""} /></Button>
             </div>

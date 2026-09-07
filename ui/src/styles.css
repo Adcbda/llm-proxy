@@ -83,11 +83,15 @@ code, pre, .mono { font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, mon
 .filter-icon { display: flex; align-items: center; gap: 7px; margin-right: 2px; color: var(--muted); font-size: 11px; }
 .search-field { display: flex; align-items: center; margin-left: auto; min-width: 190px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--muted); padding-left: 9px; }
 .search-field .input { border: 0; background: transparent; min-width: 0; }
+.batch-delete { min-height: 34px; }
 
 .table-shell { margin-top: 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(10,14,19,.76); overflow-x: auto; min-height: 310px; }
 .request-table { width: 100%; min-width: 940px; border-collapse: collapse; table-layout: auto; }
 .request-table th { height: 37px; padding: 0 13px; color: var(--dim); background: rgba(17,22,29,.72); border-bottom: 1px solid var(--line); text-align: left; text-transform: uppercase; font: 600 9px "IBM Plex Mono", monospace; letter-spacing: .09em; }
 .request-table td { height: 54px; padding: 0 13px; border-bottom: 1px solid var(--line-soft); font-size: 11px; white-space: nowrap; }
+.request-table th:first-child, .request-table td:first-child { width: 42px; padding-inline: 13px 5px; }
+.request-checkbox { width: 14px; height: 14px; margin: 0; accent-color: var(--cyan); cursor: pointer; vertical-align: middle; }
+.request-checkbox:disabled { cursor: not-allowed; opacity: .3; }
 .request-table tbody tr { cursor: pointer; transition: 120ms ease; }
 .request-table tbody tr:hover, .request-table tbody tr.selected { background: rgba(87,211,216,.035); }
 .request-table tbody tr.capture-group-row { background: linear-gradient(90deg, var(--capture-group-tint), transparent 48%); }

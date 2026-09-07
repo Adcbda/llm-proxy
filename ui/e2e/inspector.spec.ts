@@ -33,6 +33,12 @@ test("creates a project, proxies a chat request, inspects it, rotates the key, a
   await expect(page.locator(".code-block")).toContainText("e2e-agent-model");
   await page.getByRole("button", { name: "关闭详情" }).click();
 
+  await page.getByRole("checkbox", { name: /选择请求 req_/ }).check();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "删除 (1)" }).click();
+  await expect(page.getByText("已删除 1 条请求")).toBeVisible();
+  await expect(page.getByText("e2e-agent-model")).not.toBeVisible();
+
   await page.getByRole("button", { name: "项目设置" }).click();
   await page.getByRole("button", { name: "测试 /models" }).click();
   await expect(page.getByText(/连接成功/)).toBeVisible();
