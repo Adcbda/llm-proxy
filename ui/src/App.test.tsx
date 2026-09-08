@@ -60,11 +60,14 @@ describe("App", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
 
-    fireEvent.click(await screen.findByRole("button", { name: "暂停抓包" }));
-    expect(await screen.findByRole("button", { name: "继续抓包" })).toBeInTheDocument();
-    const saveGroup = screen.getByRole("button", { name: "保存为分组" });
+    const saveGroup = await screen.findByRole("button", { name: "保存为分组" });
     expect(saveGroup).toBeDisabled();
+    expect(saveGroup).toHaveAttribute("title", "请先暂停抓包");
     fireEvent.click(await screen.findByLabelText("选择请求 req_one"));
+    expect(saveGroup).toBeDisabled();
+    expect(saveGroup).toHaveAttribute("title", "请先暂停抓包");
+    fireEvent.click(screen.getByRole("button", { name: "暂停抓包" }));
+    expect(await screen.findByRole("button", { name: "继续抓包" })).toBeInTheDocument();
     expect(saveGroup).toBeEnabled();
     fireEvent.click(saveGroup);
     expect(await screen.findByRole("dialog")).toHaveTextContent("已选择 1 条请求");

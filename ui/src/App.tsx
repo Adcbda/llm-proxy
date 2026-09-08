@@ -246,7 +246,18 @@ export default function App() {
               {selectedProject.captureState === "capturing" ?
                 <Button variant="danger" disabled={pauseCapture.isPending} onClick={() => pauseCapture.mutate()}>{pauseCapture.isPending ? <Spinner /> : <Pause size={15} />}暂停抓包</Button> :
                 <Button disabled={startCapture.isPending} onClick={() => startCapture.mutate()}>{startCapture.isPending ? <Spinner /> : <Play size={15} />}{selectedProject.captureState === "paused" ? "继续抓包" : "开启抓包"}</Button>}
-              {selectedProject.captureState === "paused" && <Button variant="outline" disabled={selectedRequestIds.size === 0} title={selectedRequestIds.size === 0 ? "请先勾选要加入分组的请求" : undefined} onClick={() => setSaveGroupOpen(true)}><Save size={15} />保存为分组</Button>}
+              <Button
+                variant="outline"
+                disabled={selectedProject.captureState !== "paused" || selectedRequestIds.size === 0}
+                title={selectedProject.captureState === "capturing"
+                  ? "请先暂停抓包"
+                  : selectedProject.captureState === "idle"
+                    ? "请先开启抓包并暂停后保存分组"
+                    : selectedRequestIds.size === 0
+                      ? "请先勾选要加入分组的请求"
+                      : undefined}
+                onClick={() => setSaveGroupOpen(true)}
+              ><Save size={15} />保存为分组</Button>
               <Button variant="outline" className="copy-baseurl" onClick={() => copy(`${location.origin}/v1`, "BaseURL 已复制")}><Copy size={15} />复制 BaseURL</Button>
               <Button variant="ghost" aria-label="项目设置" onClick={() => setSettingsOpen(true)}><Settings size={18} /></Button>
             </>}
