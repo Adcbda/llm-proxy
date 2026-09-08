@@ -15,9 +15,10 @@ import (
 )
 
 var (
-	ErrNotFound           = errors.New("not found")
-	ErrCaptureNotPaused   = errors.New("capture is not paused")
-	ErrCaptureSessionGone = errors.New("capture session is unavailable")
+	ErrNotFound              = errors.New("not found")
+	ErrCaptureNotPaused      = errors.New("capture is not paused")
+	ErrCaptureSessionGone    = errors.New("capture session is unavailable")
+	ErrInvalidGroupSelection = errors.New("selected requests must exist in the project and be finished")
 )
 
 type Store struct {
@@ -87,7 +88,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			response_truncated INTEGER NOT NULL DEFAULT 0,
 			request_bytes INTEGER NOT NULL DEFAULT 0,
 			response_bytes INTEGER NOT NULL DEFAULT 0,
-			capture_session_id TEXT NOT NULL DEFAULT ''
+			capture_session_id TEXT NOT NULL DEFAULT '',
+			capture_group_id TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS capture_groups (
 			id TEXT PRIMARY KEY,
@@ -118,6 +120,8 @@ func (s *Store) migrate(ctx context.Context) error {
 	for _, statement := range []string{
 		`CREATE INDEX IF NOT EXISTS idx_request_logs_capture_session
 			ON request_logs(project_id, capture_session_id, started_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_logs_capture_group
+			ON request_logs(project_id, capture_group_id, started_at DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_capture_groups_project_created
 			ON capture_groups(project_id, created_at DESC, id DESC)`,
 	} {
@@ -128,6 +132,15 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at)
 		VALUES (2, datetime('now'))`); err != nil {
 		return fmt.Errorf("record capture migration: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE request_logs SET capture_group_id = COALESCE(
+		(SELECT g.id FROM capture_groups g WHERE g.project_id = request_logs.project_id
+		 AND g.session_id = request_logs.capture_session_id), '') WHERE capture_group_id = ''`); err != nil {
+		return fmt.Errorf("backfill capture group membership: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+		VALUES (3, datetime('now'))`); err != nil {
+		return fmt.Errorf("record selected-request group migration: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE projects SET
 		capture_session_id = 'cap_' || id || '_' || lower(hex(randomblob(8))),
@@ -147,6 +160,7 @@ func (s *Store) ensureCaptureColumns(ctx context.Context) error {
 		{"projects", "capture_started_at", "TEXT"},
 		{"projects", "capture_paused_at", "TEXT"},
 		{"request_logs", "capture_session_id", "TEXT NOT NULL DEFAULT ''"},
+		{"request_logs", "capture_group_id", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, column := range columns {
 		exists, err := s.columnExists(ctx, column.table, column.name)
@@ -426,7 +440,7 @@ func (s *Store) PauseCapture(ctx context.Context, projectID string) (Project, er
 	return s.GetProject(ctx, projectID)
 }
 
-func (s *Store) SaveCaptureGroup(ctx context.Context, projectID, groupID, name string) (CaptureGroup, error) {
+func (s *Store) SaveCaptureGroup(ctx context.Context, projectID, groupID, name string, requestIDs []string) (CaptureGroup, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return CaptureGroup{}, err
@@ -434,10 +448,8 @@ func (s *Store) SaveCaptureGroup(ctx context.Context, projectID, groupID, name s
 	defer tx.Rollback()
 	var enabled int
 	var sessionID string
-	var started, paused sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT capture_enabled, capture_session_id,
-		capture_started_at, capture_paused_at FROM projects WHERE id = ?`, projectID).
-		Scan(&enabled, &sessionID, &started, &paused); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT capture_enabled, capture_session_id
+		FROM projects WHERE id = ?`, projectID).Scan(&enabled, &sessionID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return CaptureGroup{}, ErrNotFound
 		}
@@ -446,36 +458,60 @@ func (s *Store) SaveCaptureGroup(ctx context.Context, projectID, groupID, name s
 	if enabled != 0 {
 		return CaptureGroup{}, ErrCaptureNotPaused
 	}
-	if sessionID == "" || !started.Valid {
+	if sessionID == "" {
 		return CaptureGroup{}, ErrCaptureSessionGone
 	}
-	endedAt := time.Now().UTC()
-	if paused.Valid {
-		if value, parseErr := parseTime(paused.String); parseErr == nil {
-			endedAt = value
-		}
+	if len(requestIDs) == 0 {
+		return CaptureGroup{}, ErrInvalidGroupSelection
+	}
+	placeholders := make([]string, len(requestIDs))
+	args := make([]any, 0, len(requestIDs)+1)
+	args = append(args, projectID)
+	for index, id := range requestIDs {
+		placeholders[index] = "?"
+		args = append(args, id)
+	}
+	var requestCount, runningCount int
+	var started, ended sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), MIN(started_at),
+		MAX(COALESCE(finished_at, started_at)),
+		COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0)
+		FROM request_logs WHERE project_id = ? AND id IN (`+strings.Join(placeholders, ", ")+")", args...).
+		Scan(&requestCount, &started, &ended, &runningCount); err != nil {
+		return CaptureGroup{}, err
+	}
+	if requestCount != len(requestIDs) || runningCount != 0 || !started.Valid || !ended.Valid {
+		return CaptureGroup{}, ErrInvalidGroupSelection
+	}
+	startedAt, err := parseTime(started.String)
+	if err != nil {
+		return CaptureGroup{}, err
+	}
+	endedAt, err := parseTime(ended.String)
+	if err != nil {
+		return CaptureGroup{}, err
 	}
 	createdAt := time.Now().UTC()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO capture_groups
 		(id, project_id, session_id, name, started_at, ended_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, groupID, projectID, sessionID, name, started.String,
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, groupID, projectID, groupID, name, started.String,
 		formatTime(endedAt), formatTime(createdAt)); err != nil {
+		return CaptureGroup{}, err
+	}
+	updateArgs := make([]any, 0, len(requestIDs)+2)
+	updateArgs = append(updateArgs, groupID, projectID)
+	for _, id := range requestIDs {
+		updateArgs = append(updateArgs, id)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE request_logs SET capture_group_id = ?
+		WHERE project_id = ? AND id IN (`+strings.Join(placeholders, ", ")+")", updateArgs...); err != nil {
 		return CaptureGroup{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE projects SET capture_session_id = '',
 		capture_started_at = NULL, capture_paused_at = NULL WHERE id = ?`, projectID); err != nil {
 		return CaptureGroup{}, err
 	}
-	var requestCount int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_logs WHERE project_id = ?
-		AND capture_session_id = ?`, projectID, sessionID).Scan(&requestCount); err != nil {
-		return CaptureGroup{}, err
-	}
 	if err := tx.Commit(); err != nil {
-		return CaptureGroup{}, err
-	}
-	startedAt, err := parseTime(started.String)
-	if err != nil {
 		return CaptureGroup{}, err
 	}
 	return CaptureGroup{ID: groupID, ProjectID: projectID, Name: name, StartedAt: startedAt,
@@ -485,7 +521,7 @@ func (s *Store) SaveCaptureGroup(ctx context.Context, projectID, groupID, name s
 func (s *Store) ListCaptureGroups(ctx context.Context, projectID string) ([]CaptureGroup, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT g.id, g.project_id, g.name, g.started_at,
 		g.ended_at, g.created_at, COUNT(r.id) FROM capture_groups g
-		LEFT JOIN request_logs r ON r.project_id = g.project_id AND r.capture_session_id = g.session_id
+		LEFT JOIN request_logs r ON r.project_id = g.project_id AND r.capture_group_id = g.id
 		WHERE g.project_id = ? GROUP BY g.id ORDER BY g.created_at DESC, g.id DESC`, projectID)
 	if err != nil {
 		return nil, err
@@ -604,8 +640,8 @@ func (s *Store) ListRequests(ctx context.Context, params ListRequestsParams) (Li
 		args = append(args, boolInt(*params.Streaming))
 	}
 	if params.GroupID != "" {
-		where = append(where, `capture_session_id = (SELECT session_id FROM capture_groups WHERE id = ? AND project_id = ?)`)
-		args = append(args, params.GroupID, params.ProjectID)
+		where = append(where, "capture_group_id = ?")
+		args = append(args, params.GroupID)
 	}
 	if params.Cursor != "" {
 		startedAt, id, err := decodeCursor(params.Cursor)
@@ -616,11 +652,7 @@ func (s *Store) ListRequests(ctx context.Context, params ListRequestsParams) (Li
 		args = append(args, startedAt, startedAt, id)
 	}
 	args = append(args, params.Limit+1)
-	query := `SELECT id, project_id,
-		COALESCE((SELECT g.id FROM capture_groups g
-			WHERE g.project_id = request_logs.project_id
-			AND g.session_id = request_logs.capture_session_id), ''),
-		method, path, model, streaming, status, http_status,
+	query := `SELECT id, project_id, capture_group_id, method, path, model, streaming, status, http_status,
 		started_at, finished_at, duration_ms, request_truncated, response_truncated,
 		request_bytes, response_bytes FROM request_logs WHERE ` + strings.Join(where, " AND ") +
 		` ORDER BY started_at DESC, id DESC LIMIT ?`

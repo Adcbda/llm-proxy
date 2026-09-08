@@ -9,7 +9,7 @@
 - 模型名、消息、工具定义和厂商扩展字段原样转发，不做模型白名单校验
 - 同时记录非流式响应和流式 SSE；流式响应额外聚合 assistant 内容、refusal、function/tool calls、finish reason 与 usage
 - 请求详情展示本轮模型总耗时；相邻请求的 `tool_call_id` 匹配时，还会展示从上一轮响应结束到工具结果回传的推算耗时（包含 Agent 调度开销，并发工具共享批次耗时）
-- 可按项目开启或暂停抓包；暂停后可将本轮请求保存为命名分组，并按分组回看
+- 可按项目开启或暂停抓包；暂停后可勾选指定请求保存为命名分组，并按分组回看
 - SQLite 持久化；项目 Key 与上游 Key 使用 AES-256-GCM 加密
 - 默认仅监听 `127.0.0.1:8080`，管理台不包含登录系统
 
@@ -100,7 +100,7 @@ BaseURL 按 SDK 的 API 根地址处理。例如上游填写 `https://api.openai
 - `POST /api/projects/{id}/test-upstream`
 - `POST /api/projects/{id}/capture/start`
 - `POST /api/projects/{id}/capture/pause`
-- `GET/POST /api/projects/{id}/capture-groups`
+- `GET/POST /api/projects/{id}/capture-groups`（POST 请求体为 `{ "name": "...", "requestIds": ["req_..."] }`，需选择 1–100 条已结束、非运行中的请求）
 - `GET/DELETE /api/projects/{id}/requests`
 - `POST /api/projects/{id}/requests/batch-delete`（请求体为 `{ "ids": ["req_..."] }`，单次最多 100 条）
 - `GET /api/requests/{id}`

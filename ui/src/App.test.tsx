@@ -19,14 +19,21 @@ describe("App", () => {
     expect(screen.getByLabelText("项目名称")).toBeInTheDocument();
   });
 
-  it("pauses capture and saves the round as a group", async () => {
+  it("requires selected requests and saves only those requests as a group", async () => {
     let captureState: "capturing" | "paused" | "idle" = "capturing";
+    let saveGroupInput: { name: string; requestIds: string[] } | undefined;
+    const now = new Date().toISOString();
     const project = () => ({
       id: "prj_test", name: "Capture test", baseUrl: "http://upstream.test/v1",
-      upstreamApiKeyMasked: "", apiKeyPrefix: "llmp_test", createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(), requestCount: 2, captureState,
-      captureStartedAt: new Date().toISOString(), capturePausedAt: captureState === "paused" ? new Date().toISOString() : null,
+      upstreamApiKeyMasked: "", apiKeyPrefix: "llmp_test", createdAt: now,
+      updatedAt: now, requestCount: 2, captureState,
+      captureStartedAt: now, capturePausedAt: captureState === "paused" ? now : null,
       captureRequestCount: captureState === "idle" ? 0 : 2,
+    });
+    const request = (id: string) => ({
+      id, projectId: "prj_test", method: "POST", path: "/v1/chat/completions", model: "test-model",
+      streaming: false, status: "completed", httpStatus: 200, startedAt: now, finishedAt: now,
+      durationMs: 10, requestTruncated: false, responseTruncated: false, requestBytes: 10, responseBytes: 20,
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -35,12 +42,13 @@ describe("App", () => {
         return { ok: true, json: async () => project() };
       }
       if (url.endsWith("/capture-groups") && init?.method === "POST") {
+        saveGroupInput = JSON.parse(String(init.body));
         captureState = "idle";
-        return { ok: true, json: async () => ({ id: "grp_test", projectId: "prj_test", name: "复现分组", startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), createdAt: new Date().toISOString(), requestCount: 2 }) };
+        return { ok: true, json: async () => ({ id: "grp_test", projectId: "prj_test", name: "复现分组", startedAt: now, endedAt: now, createdAt: now, requestCount: 1 }) };
       }
       if (url === "/api/projects") return { ok: true, json: async () => ({ items: [project()] }) };
       if (url.includes("/capture-groups")) return { ok: true, json: async () => ({ items: [] }) };
-      if (url.includes("/requests")) return { ok: true, json: async () => ({ items: [] }) };
+      if (url.includes("/requests")) return { ok: true, json: async () => ({ items: [request("req_one"), request("req_two")] }) };
       return { ok: false, status: 404, json: async () => ({}) };
     });
     class EventSourceStub {
@@ -54,10 +62,16 @@ describe("App", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "暂停抓包" }));
     expect(await screen.findByRole("button", { name: "继续抓包" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "保存为分组" }));
+    const saveGroup = screen.getByRole("button", { name: "保存为分组" });
+    expect(saveGroup).toBeDisabled();
+    fireEvent.click(await screen.findByLabelText("选择请求 req_one"));
+    expect(saveGroup).toBeEnabled();
+    fireEvent.click(saveGroup);
+    expect(await screen.findByRole("dialog")).toHaveTextContent("已选择 1 条请求");
     fireEvent.change(await screen.findByLabelText("分组名称"), { target: { value: "复现分组" } });
     fireEvent.click(screen.getByRole("button", { name: "保存分组" }));
     expect(await screen.findByText("已保存分组“复现分组”")).toBeInTheDocument();
+    expect(saveGroupInput).toEqual({ name: "复现分组", requestIds: ["req_one"] });
   });
 
   it("uses stable group colors in the all-captures view", async () => {

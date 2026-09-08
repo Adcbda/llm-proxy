@@ -145,11 +145,12 @@ func TestCaptureCanPauseSaveGroupAndStartANewRound(t *testing.T) {
 	if _, err := store.GetRequest(context.Background(), firstID); err != nil {
 		t.Fatalf("active capture did not save request: %v", err)
 	}
+	secondID := callModels()
 	var paused Project
 	if status := postAPI("/api/projects/prj_test/capture/pause", "", &paused); status != http.StatusOK {
 		t.Fatalf("pause returned %d", status)
 	}
-	if paused.CaptureState != "paused" || paused.CaptureRequestCount != 1 {
+	if paused.CaptureState != "paused" || paused.CaptureRequestCount != 2 {
 		t.Fatalf("unexpected paused state: %+v", paused)
 	}
 
@@ -157,8 +158,14 @@ func TestCaptureCanPauseSaveGroupAndStartANewRound(t *testing.T) {
 	if _, err := store.GetRequest(context.Background(), uncapturedID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("request made while paused was captured: %v", err)
 	}
+	if status := postAPI("/api/projects/prj_test/capture-groups", `{"name":"empty selection","requestIds":[]}`, nil); status != http.StatusBadRequest {
+		t.Fatalf("save group without selected requests returned %d", status)
+	}
+	if status := postAPI("/api/projects/prj_test/capture-groups", `{"name":"missing selection","requestIds":["req_missing"]}`, nil); status != http.StatusBadRequest {
+		t.Fatalf("save group with an unknown request returned %d", status)
+	}
 	var group CaptureGroup
-	if status := postAPI("/api/projects/prj_test/capture-groups", `{"name":"first round"}`, &group); status != http.StatusCreated {
+	if status := postAPI("/api/projects/prj_test/capture-groups", `{"name":"first round","requestIds":["`+firstID+`"]}`, &group); status != http.StatusCreated {
 		t.Fatalf("save group returned %d", status)
 	}
 	if group.Name != "first round" || group.RequestCount != 1 {
@@ -169,7 +176,7 @@ func TestCaptureCanPauseSaveGroupAndStartANewRound(t *testing.T) {
 		t.Fatalf("unexpected grouped requests: %+v, %v", groupRequests, err)
 	}
 	allRequests, err := store.ListRequests(context.Background(), ListRequestsParams{ProjectID: "prj_test"})
-	if err != nil || len(allRequests.Items) != 1 || allRequests.Items[0].GroupID != group.ID {
+	if err != nil || len(allRequests.Items) != 2 || allRequests.Items[0].ID != secondID || allRequests.Items[0].GroupID != "" || allRequests.Items[1].ID != firstID || allRequests.Items[1].GroupID != group.ID {
 		t.Fatalf("all requests did not include capture group: %+v, %v", allRequests, err)
 	}
 
@@ -180,8 +187,8 @@ func TestCaptureCanPauseSaveGroupAndStartANewRound(t *testing.T) {
 	if started.CaptureState != "capturing" || started.CaptureRequestCount != 0 {
 		t.Fatalf("unexpected new capture state: %+v", started)
 	}
-	secondID := callModels()
-	if _, err := store.GetRequest(context.Background(), secondID); err != nil {
+	thirdID := callModels()
+	if _, err := store.GetRequest(context.Background(), thirdID); err != nil {
 		t.Fatalf("new capture round did not save request: %v", err)
 	}
 	groups, err := store.ListCaptureGroups(context.Background(), "prj_test")

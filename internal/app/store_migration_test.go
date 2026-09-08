@@ -64,14 +64,90 @@ func TestOpenStoreMigratesDatabaseWithoutCaptureSessions(t *testing.T) {
 	if project.CaptureState != "capturing" || project.CaptureSessionID == "" || project.CaptureStartedAt == nil {
 		t.Fatalf("legacy project was not given an active capture session: %+v", project)
 	}
+	startedAt := time.Now().UTC()
+	if err := store.StartRequest(context.Background(), StartRequestParams{
+		ID: "req_legacy", ProjectID: project.ID, Method: "GET", Path: "/v1/models",
+		UpstreamURL: "http://example.test/v1/models", StartedAt: startedAt,
+		CaptureSessionID: project.CaptureSessionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishRequest(context.Background(), FinishRequestParams{
+		ID: "req_legacy", Status: "completed", FinishedAt: startedAt.Add(time.Millisecond),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.PauseCapture(context.Background(), project.ID); err != nil {
 		t.Fatal(err)
 	}
-	group, err := store.SaveCaptureGroup(context.Background(), project.ID, "grp_legacy", "legacy round")
+	group, err := store.SaveCaptureGroup(context.Background(), project.ID, "grp_legacy", "legacy round", []string{"req_legacy"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if group.Name != "legacy round" || group.RequestCount != 0 {
+	if group.Name != "legacy round" || group.RequestCount != 1 {
 		t.Fatalf("unexpected migrated capture group: %+v", group)
+	}
+}
+
+func TestOpenStoreBackfillsLegacyCaptureGroupMembership(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "legacy-groups.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.CreateProject(context.Background(), CreateProjectParams{
+		ID: "prj_legacy_group", Name: "legacy group", BaseURL: "http://example.test",
+		APIKeyHash: "legacy-group-hash", APIKeyEncrypted: "encrypted", APIKeyPrefix: "prefix",
+	})
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	startedAt := time.Now().UTC()
+	if err := store.StartRequest(context.Background(), StartRequestParams{
+		ID: "req_legacy_group", ProjectID: project.ID, Method: "GET", Path: "/v1/models",
+		UpstreamURL: "http://example.test/v1/models", StartedAt: startedAt,
+		CaptureSessionID: project.CaptureSessionID,
+	}); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err := store.FinishRequest(context.Background(), FinishRequestParams{
+		ID: "req_legacy_group", Status: "completed", FinishedAt: startedAt.Add(time.Millisecond),
+	}); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO capture_groups
+		(id, project_id, session_id, name, started_at, ended_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, "grp_legacy_session", project.ID, project.CaptureSessionID,
+		"legacy session group", formatTime(startedAt), formatTime(startedAt.Add(time.Millisecond)),
+		formatTime(startedAt.Add(time.Second))); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	requests, err := store.ListRequests(context.Background(), ListRequestsParams{ProjectID: project.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests.Items) != 1 || requests.Items[0].GroupID != "grp_legacy_session" {
+		t.Fatalf("legacy group membership was not backfilled: %+v", requests.Items)
+	}
+	groups, err := store.ListCaptureGroups(context.Background(), project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].RequestCount != 1 {
+		t.Fatalf("legacy group request count was not preserved: %+v", groups)
 	}
 }

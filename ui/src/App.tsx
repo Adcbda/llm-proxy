@@ -179,7 +179,7 @@ export default function App() {
     columnHelper.display({
       id: "select",
       header: () => <SelectionCheckbox aria-label="选择当前页请求" checked={allSelectedOnPage} indeterminate={selectedOnPage > 0 && !allSelectedOnPage} disabled={selectableRequestIds.length === 0} onChange={togglePageSelection} onClick={(event) => event.stopPropagation()} />,
-      cell: (info) => <SelectionCheckbox aria-label={`选择请求 ${info.row.original.id}`} checked={selectedRequestIds.has(info.row.original.id)} disabled={info.row.original.status === "running"} title={info.row.original.status === "running" ? "运行中的请求不能删除" : undefined} onChange={() => toggleRequestSelection(info.row.original.id)} onClick={(event) => event.stopPropagation()} />,
+      cell: (info) => <SelectionCheckbox aria-label={`选择请求 ${info.row.original.id}`} checked={selectedRequestIds.has(info.row.original.id)} disabled={info.row.original.status === "running"} title={info.row.original.status === "running" ? "运行中的请求不能选择" : undefined} onChange={() => toggleRequestSelection(info.row.original.id)} onClick={(event) => event.stopPropagation()} />,
     }),
     columnHelper.accessor("status", { header: "状态", cell: (info) => <StatusBadge status={info.getValue()} /> }),
     columnHelper.accessor("path", { header: "接口", cell: (info) => <span className="endpoint"><Code2 size={14} />{info.getValue().replace("/v1/", "")}</span> }),
@@ -246,7 +246,7 @@ export default function App() {
               {selectedProject.captureState === "capturing" ?
                 <Button variant="danger" disabled={pauseCapture.isPending} onClick={() => pauseCapture.mutate()}>{pauseCapture.isPending ? <Spinner /> : <Pause size={15} />}暂停抓包</Button> :
                 <Button disabled={startCapture.isPending} onClick={() => startCapture.mutate()}>{startCapture.isPending ? <Spinner /> : <Play size={15} />}{selectedProject.captureState === "paused" ? "继续抓包" : "开启抓包"}</Button>}
-              {selectedProject.captureState === "paused" && <Button variant="outline" onClick={() => setSaveGroupOpen(true)}><Save size={15} />保存为分组</Button>}
+              {selectedProject.captureState === "paused" && <Button variant="outline" disabled={selectedRequestIds.size === 0} title={selectedRequestIds.size === 0 ? "请先勾选要加入分组的请求" : undefined} onClick={() => setSaveGroupOpen(true)}><Save size={15} />保存为分组</Button>}
               <Button variant="outline" className="copy-baseurl" onClick={() => copy(`${location.origin}/v1`, "BaseURL 已复制")}><Copy size={15} />复制 BaseURL</Button>
               <Button variant="ghost" aria-label="项目设置" onClick={() => setSettingsOpen(true)}><Settings size={18} /></Button>
             </>}
@@ -316,7 +316,7 @@ export default function App() {
       </main>
 
       {selectedRequestId && <RequestInspector detail={detailQuery.data} loading={detailQuery.isLoading} error={detailQuery.error?.message} onClose={() => setSelectedRequestId("")} onCopy={copy} />}
-      {selectedProject && <SaveCaptureGroupDialog open={saveGroupOpen} onOpenChange={setSaveGroupOpen} project={selectedProject} onSaved={(group) => { refreshCapture(); setFilters((value) => ({ ...value, groupId: group.id })); setToast(`已保存分组“${group.name}”`); }} />}
+      {selectedProject && <SaveCaptureGroupDialog open={saveGroupOpen} onOpenChange={setSaveGroupOpen} project={selectedProject} requestIds={[...selectedRequestIds]} onSaved={(group) => { setSelectedRequestIds(new Set()); refreshCapture(); setFilters((value) => ({ ...value, groupId: group.id })); setToast(`已保存分组“${group.name}”`); }} />}
       <CreateProjectDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={(project) => { setSelectedProjectId(project.id); queryClient.invalidateQueries({ queryKey: ["projects"] }); }} />
       {selectedProject && <ProjectSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} project={selectedProject} onChanged={() => queryClient.invalidateQueries({ queryKey: ["projects"] })} onDeleted={() => { setSettingsOpen(false); setSelectedProjectId(""); queryClient.invalidateQueries({ queryKey: ["projects"] }); }} onToast={setToast} />}
       {toast && <div className="toast"><Check size={16} />{toast}</div>}
@@ -332,16 +332,17 @@ function EmptyWorkspace({ onCreate, loading }: { onCreate: () => void; loading: 
   return <div className="empty-workspace">{loading ? <Spinner /> : <><div className="empty-orbit"><Network size={34} /></div><span className="eyebrow">OPENAI-COMPATIBLE CAPTURE</span><h2>看清 Agent 的每一次模型交互</h2><p>创建项目后会得到独立 API Key。所有 Chat Completions 和 Models 请求都会在这里实时出现。</p><Button onClick={onCreate}><Plus size={16} />创建项目</Button></>}</div>;
 }
 
-function SaveCaptureGroupDialog({ open, onOpenChange, project, onSaved }: {
+function SaveCaptureGroupDialog({ open, onOpenChange, project, requestIds, onSaved }: {
   open: boolean;
   onOpenChange: (value: boolean) => void;
   project: Project;
+  requestIds: string[];
   onSaved: (group: CaptureGroup) => void;
 }) {
   const defaultName = () => `抓包 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
   const [name, setName] = useState(defaultName);
   const mutation = useMutation({
-    mutationFn: () => api.saveCaptureGroup(project.id, name),
+    mutationFn: () => api.saveCaptureGroup(project.id, name, requestIds),
     onSuccess: (group) => {
       onSaved(group);
       onOpenChange(false);
@@ -355,7 +356,7 @@ function SaveCaptureGroupDialog({ open, onOpenChange, project, onSaved }: {
     // Reset only when the dialog opens; mutation is deliberately not a dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, project.id]);
-  return <Dialog open={open} onOpenChange={onOpenChange} title="保存抓包分组" description={`本轮共抓取 ${project.captureRequestCount} 条请求。保存后可以通过分组筛选快速回看。`} footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button disabled={!name.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Spinner /> : <Save size={15} />}保存分组</Button></>}>
+  return <Dialog open={open} onOpenChange={onOpenChange} title="保存抓包分组" description={`已选择 ${requestIds.length} 条请求。保存后可以通过分组筛选快速回看。`} footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button disabled={!name.trim() || requestIds.length === 0 || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? <Spinner /> : <Save size={15} />}保存分组</Button></>}>
     <div className="form-stack">
       <Field label="分组名称"><Input autoFocus maxLength={100} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：工具调用异常复现" /></Field>
       {mutation.error && <div className="form-error"><AlertTriangle size={15} />{mutation.error.message}</div>}

@@ -18,7 +18,8 @@ type projectInput struct {
 }
 
 type captureGroupInput struct {
-	Name string `json:"name"`
+	Name       string   `json:"name"`
+	RequestIDs []string `json:"requestIds"`
 }
 
 type deleteRequestsInput struct {
@@ -282,12 +283,34 @@ func (server *Server) saveCaptureGroup(writer http.ResponseWriter, request *http
 		writeAPIError(writer, http.StatusBadRequest, "group name must contain 1-100 characters")
 		return
 	}
+	if len(input.RequestIDs) == 0 {
+		writeAPIError(writer, http.StatusBadRequest, "requestIds must contain at least one request id")
+		return
+	}
+	if len(input.RequestIDs) > 100 {
+		writeAPIError(writer, http.StatusBadRequest, "requestIds cannot contain more than 100 request ids")
+		return
+	}
+	requestIDs := make([]string, 0, len(input.RequestIDs))
+	seen := make(map[string]struct{}, len(input.RequestIDs))
+	for _, rawID := range input.RequestIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			writeAPIError(writer, http.StatusBadRequest, "request ids cannot be empty")
+			return
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		requestIDs = append(requestIDs, id)
+	}
 	groupID, err := NewID("grp")
 	if err != nil {
 		writeAPIError(writer, http.StatusInternalServerError, "could not create capture group")
 		return
 	}
-	group, err := server.store.SaveCaptureGroup(request.Context(), projectID, groupID, name)
+	group, err := server.store.SaveCaptureGroup(request.Context(), projectID, groupID, name, requestIDs)
 	if err != nil {
 		handleStoreError(writer, err)
 		return

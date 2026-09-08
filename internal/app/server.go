@@ -327,5 +327,9 @@ func handleStoreError(writer http.ResponseWriter, err error) {
 		writeAPIError(writer, http.StatusConflict, err.Error())
 		return
 	}
+	if errors.Is(err, ErrInvalidGroupSelection) {
+		writeAPIError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
 	writeAPIError(writer, http.StatusInternalServerError, "internal server error")
 }
