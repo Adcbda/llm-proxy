@@ -16,6 +16,40 @@ const statusLabels: Record<string, string> = {
 };
 
 const emptyRequests: RequestSummary[] = [];
+const inspectorWidthStorageKey = "llm-proxy:request-inspector-width";
+
+function inspectorWidthBounds() {
+  const viewportWidth = typeof window === "undefined" ? 1440 : window.innerWidth;
+  const min = Math.min(420, viewportWidth);
+  const max = viewportWidth <= 760 ? viewportWidth : Math.max(min, viewportWidth - 80);
+  return { min, max };
+}
+
+function clampInspectorWidth(width: number) {
+  const { min, max } = inspectorWidthBounds();
+  return Math.min(max, Math.max(min, width));
+}
+
+function defaultInspectorWidth() {
+  const viewportWidth = typeof window === "undefined" ? 1440 : window.innerWidth;
+  const preferredWidth = viewportWidth <= 1050 ? Math.min(760, viewportWidth * .86) : Math.min(760, viewportWidth * .72);
+  return clampInspectorWidth(preferredWidth);
+}
+
+function savedInspectorWidth() {
+  try {
+    const saved = Number(window.localStorage.getItem(inspectorWidthStorageKey));
+    return Number.isFinite(saved) && saved > 0 ? clampInspectorWidth(saved) : defaultInspectorWidth();
+  } catch {
+    return defaultInspectorWidth();
+  }
+}
+
+function persistInspectorWidth(width: number) {
+  try {
+    window.localStorage.setItem(inspectorWidthStorageKey, String(Math.round(width)));
+  } catch { /* localStorage may be unavailable in privacy-restricted contexts */ }
+}
 
 const captureGroupColors = [
   { color: "#57d3d8", tint: "rgba(87, 211, 216, .065)", hover: "rgba(87, 211, 216, .11)" },
@@ -563,7 +597,109 @@ function SecretReveal({ value }: { value: string }) {
 function RequestInspector({ detail, loading, error, onClose, onCopy }: { detail?: RequestDetail; loading: boolean; error?: string; onClose: () => void; onCopy: (value: string, message?: string) => void }) {
   const [rawSide, setRawSide] = useState<"request" | "response">("request");
   const [wrap, setWrap] = useState(true);
-  return <aside className="inspector">
+  const [width, setWidth] = useState(savedInspectorWidth);
+  const [resizing, setResizing] = useState(false);
+  const inspectorRef = useRef<HTMLElement>(null);
+  const resizeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+    currentWidth: number;
+    previousCursor: string;
+    previousUserSelect: string;
+  } | null>(null);
+
+  const restoreResizeStyles = () => {
+    const resize = resizeRef.current;
+    if (!resize) return;
+    document.documentElement.style.cursor = resize.previousCursor;
+    document.body.style.userSelect = resize.previousUserSelect;
+  };
+
+  useEffect(() => () => {
+    restoreResizeStyles();
+    resizeRef.current = null;
+  }, []);
+
+  const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const startWidth = inspectorRef.current?.getBoundingClientRect().width || width;
+    resizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth,
+      currentWidth: startWidth,
+      previousCursor: document.documentElement.style.cursor,
+      previousUserSelect: document.body.style.userSelect,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    document.documentElement.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    setResizing(true);
+  };
+
+  const resize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = resizeRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const nextWidth = clampInspectorWidth(drag.startWidth + drag.startX - event.clientX);
+    drag.currentWidth = nextWidth;
+    setWidth(nextWidth);
+  };
+
+  const finishResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = resizeRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    persistInspectorWidth(drag.currentWidth);
+    restoreResizeStyles();
+    resizeRef.current = null;
+    setResizing(false);
+  };
+
+  const cancelResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = resizeRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setWidth(drag.startWidth);
+    restoreResizeStyles();
+    resizeRef.current = null;
+    setResizing(false);
+  };
+
+  const resizeWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const nextWidth = clampInspectorWidth(width + (event.key === "ArrowLeft" ? 24 : -24));
+    setWidth(nextWidth);
+    persistInspectorWidth(nextWidth);
+  };
+
+  const resetWidth = () => {
+    const nextWidth = defaultInspectorWidth();
+    setWidth(nextWidth);
+    try { window.localStorage.removeItem(inspectorWidthStorageKey); } catch { /* ignore unavailable storage */ }
+  };
+
+  const { min: minWidth, max: maxWidth } = inspectorWidthBounds();
+  return <aside ref={inspectorRef} className={`inspector ${resizing ? "resizing" : ""}`} style={{ "--inspector-width": `${width}px` } as React.CSSProperties}>
+    <div
+      className="inspector-resize-handle"
+      role="separator"
+      aria-label="调整详情面板宽度"
+      aria-orientation="vertical"
+      aria-valuemin={Math.round(minWidth)}
+      aria-valuemax={Math.round(maxWidth)}
+      aria-valuenow={Math.round(width)}
+      tabIndex={0}
+      title="拖动调整宽度，双击恢复默认"
+      onPointerDown={startResize}
+      onPointerMove={resize}
+      onPointerUp={finishResize}
+      onPointerCancel={cancelResize}
+      onKeyDown={resizeWithKeyboard}
+      onDoubleClick={resetWidth}
+    />
     <div className="inspector-header"><div><span className="eyebrow">REQUEST DETAIL</span><strong>{detail?.id || "加载中…"}</strong></div><Button variant="ghost" aria-label="关闭详情" onClick={onClose}><X size={18} /></Button></div>
     {loading && <div className="inspector-state"><Spinner />读取抓包…</div>}
     {error && <div className="inspector-state error"><AlertTriangle />{error}</div>}

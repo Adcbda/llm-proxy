@@ -1,11 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 afterEach(() => {
+  cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  window.localStorage.clear();
 });
 
 describe("App", () => {
@@ -161,6 +163,57 @@ describe("App", () => {
     fireEvent.click(modelCell.closest("tr")!);
     expect(await screen.findByText("UPSTREAM RESPONSE · 本轮模型 1.25 s")).toBeInTheDocument();
     expect(await screen.findAllByText("推算 ≈ 875 ms · 批次")).toHaveLength(2);
+  });
+
+  it("resizes the request inspector by dragging its left edge", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    const now = new Date().toISOString();
+    const project = {
+      id: "prj_resize", name: "Resize test", baseUrl: "http://upstream.test/v1",
+      upstreamApiKeyMasked: "", apiKeyPrefix: "llmp_test", createdAt: now, updatedAt: now,
+      requestCount: 1, captureState: "capturing" as const, captureStartedAt: now, capturePausedAt: null,
+      captureRequestCount: 1,
+    };
+    const summary = {
+      id: "req_resize", projectId: project.id, method: "POST", path: "/v1/chat/completions", model: "resize-model",
+      streaming: false, status: "completed", httpStatus: 200, startedAt: now, finishedAt: now,
+      durationMs: 10, requestTruncated: false, responseTruncated: false, requestBytes: 10, responseBytes: 20,
+    };
+    const detail = {
+      ...summary, upstreamUrl: "http://upstream.test/v1/chat/completions", error: "",
+      requestHeaders: {}, responseHeaders: {}, live: false,
+      requestBody: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+      responseBody: JSON.stringify({ choices: [{ message: { role: "assistant", content: "hi" } }] }),
+      aggregatedResponse: "",
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/projects") return { ok: true, json: async () => ({ items: [project] }) };
+      if (url.includes("/capture-groups")) return { ok: true, json: async () => ({ items: [] }) };
+      if (url === "/api/requests/req_resize") return { ok: true, json: async () => detail };
+      if (url.includes("/requests")) return { ok: true, json: async () => ({ items: [summary] }) };
+      return { ok: false, status: 404, json: async () => ({}) };
+    }));
+    class EventSourceStub {
+      addEventListener() { /* no-op */ }
+      close() { /* no-op */ }
+    }
+    vi.stubGlobal("EventSource", EventSourceStub);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+
+    fireEvent.click(await screen.findByText("resize-model"));
+    const handle = await screen.findByRole("separator", { name: "调整详情面板宽度" });
+    const inspector = view.container.querySelector<HTMLElement>(".inspector")!;
+    vi.spyOn(inspector, "getBoundingClientRect").mockReturnValue({
+      left: 324, right: 1024, top: 0, bottom: 768, width: 700, height: 768, x: 324, y: 0, toJSON: () => ({}),
+    });
+
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 9, clientX: 324 });
+    fireEvent.pointerMove(handle, { pointerId: 9, clientX: 204 });
+    expect(inspector.style.getPropertyValue("--inspector-width")).toBe("820px");
+    fireEvent.pointerUp(handle, { pointerId: 9, clientX: 204 });
+    expect(window.localStorage.getItem("llm-proxy:request-inspector-width")).toBe("820");
   });
 
   it("selects completed requests and deletes them in one batch", async () => {

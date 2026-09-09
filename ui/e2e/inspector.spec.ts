@@ -27,8 +27,22 @@ test("creates a project, proxies a chat request, inspects it, rotates the key, a
   await expect(page.getByText("e2e-agent-model")).toBeVisible();
 
   await page.getByText("e2e-agent-model").click();
-  await expect(page.locator(".inspector")).toContainText("inspect me");
-  await expect(page.locator(".inspector")).toContainText("hello from upstream");
+  const inspector = page.locator(".inspector");
+  await expect(inspector).toContainText("inspect me");
+  await expect(inspector).toContainText("hello from upstream");
+  await inspector.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+  const initialInspectorBox = await inspector.boundingBox();
+  const resizeHandleBox = await page.getByRole("separator", { name: "调整详情面板宽度" }).boundingBox();
+  expect(initialInspectorBox).not.toBeNull();
+  expect(resizeHandleBox).not.toBeNull();
+  await page.mouse.move(resizeHandleBox!.x + resizeHandleBox!.width / 2, resizeHandleBox!.y + 120);
+  await page.mouse.down();
+  await expect(inspector).toHaveClass(/resizing/);
+  await page.mouse.move(resizeHandleBox!.x - 120, resizeHandleBox!.y + 120, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(async () => (await inspector.boundingBox())?.width).toBeGreaterThan(initialInspectorBox!.width + 100);
+  const resizedInspectorBox = await inspector.boundingBox();
+  expect(await page.evaluate(() => window.localStorage.getItem("llm-proxy:request-inspector-width"))).toBe(String(Math.round(resizedInspectorBox!.width)));
   await page.getByRole("tab", { name: "原始包" }).click();
   await expect(page.locator(".code-block")).toContainText("e2e-agent-model");
   await page.getByRole("button", { name: "关闭详情" }).click();
