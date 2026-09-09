@@ -415,6 +415,14 @@ export default function App() {
             </div>
 
             <div className="toolbar">
+              <Button
+                variant="outline"
+                className={`marquee-toggle ${marqueeMode ? "active" : ""}`}
+                aria-pressed={marqueeMode}
+                title={marqueeMode ? "拖动框选请求，按 Esc 退出" : "开启后可在请求列表中拖动框选"}
+                onClick={() => setMarqueeMode((value) => !value)}
+              ><MousePointer2 size={15} />框选</Button>
+              <Button variant="danger" className="batch-delete" disabled={selectedRequestIds.size === 0 || deleteRequests.isPending} onClick={confirmDeleteRequests}>{deleteRequests.isPending ? <Spinner /> : <Trash2 size={15} />}删除{selectedRequestIds.size > 0 ? ` (${selectedRequestIds.size})` : ""}</Button>
               <div className="filter-icon"><ListFilter size={17} /><span>筛选</span></div>
               {captureGroups.length > 0 && <Select aria-label="抓包分组筛选" value={filters.groupId || ""} onChange={(event) => setFilters((value) => ({ ...value, groupId: event.target.value }))}>
                 <option value="">全部抓包</option>{captureGroups.map((group) => <option key={group.id} value={group.id}>{group.name} ({group.requestCount})</option>)}
@@ -428,14 +436,6 @@ export default function App() {
               <Select aria-label="流式筛选" value={filters.streaming || ""} onChange={(event) => setFilters((value) => ({ ...value, streaming: event.target.value }))}>
                 <option value="">全部模式</option><option value="true">Stream</option><option value="false">JSON</option>
               </Select>
-              <Button variant="danger" className="batch-delete" disabled={selectedRequestIds.size === 0 || deleteRequests.isPending} onClick={confirmDeleteRequests}>{deleteRequests.isPending ? <Spinner /> : <Trash2 size={15} />}删除{selectedRequestIds.size > 0 ? ` (${selectedRequestIds.size})` : ""}</Button>
-              <Button
-                variant="outline"
-                className={`marquee-toggle ${marqueeMode ? "active" : ""}`}
-                aria-pressed={marqueeMode}
-                title={marqueeMode ? "拖动框选请求，按 Esc 退出" : "开启后可在请求列表中拖动框选"}
-                onClick={() => setMarqueeMode((value) => !value)}
-              ><MousePointer2 size={15} />框选</Button>
               <div className="search-field"><Search size={15} /><Input aria-label="模型筛选" placeholder="筛选模型…" value={filters.model || ""} onChange={(event) => setFilters((value) => ({ ...value, model: event.target.value }))} /></div>
               <Button variant="ghost" aria-label="刷新请求" onClick={() => requestsQuery.refetch()}><RefreshCw size={16} className={requestsQuery.isFetching ? "spin" : ""} /></Button>
             </div>
