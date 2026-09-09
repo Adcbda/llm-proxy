@@ -213,4 +213,64 @@ describe("App", () => {
     const deleteCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/requests/batch-delete"));
     expect(JSON.parse(String(deleteCall?.[1]?.body))).toEqual({ ids: ["req_delete_a", "req_delete_b"] });
   });
+
+  it("box-selects multiple completed rows and skips running requests", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    const now = new Date().toISOString();
+    const project = {
+      id: "prj_test", name: "Box select test", baseUrl: "http://upstream.test/v1",
+      upstreamApiKeyMasked: "", apiKeyPrefix: "llmp_test", createdAt: now, updatedAt: now,
+      requestCount: 4, captureState: "capturing" as const, captureStartedAt: now, capturePausedAt: null,
+      captureRequestCount: 4,
+    };
+    const request = (id: string, status: "completed" | "running" = "completed") => ({
+      id, projectId: project.id, method: "POST", path: "/v1/chat/completions", model: id,
+      streaming: false, status, httpStatus: status === "completed" ? 200 : null, startedAt: now,
+      finishedAt: status === "completed" ? now : null, durationMs: 10, requestTruncated: false,
+      responseTruncated: false, requestBytes: 10, responseBytes: 20,
+    });
+    const requests = [request("req_box_a"), request("req_box_b"), request("req_box_c"), request("req_box_running", "running")];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/projects") return { ok: true, json: async () => ({ items: [project] }) };
+      if (url.includes("/capture-groups")) return { ok: true, json: async () => ({ items: [] }) };
+      if (url.includes("/requests")) return { ok: true, json: async () => ({ items: requests }) };
+      return { ok: false, status: 404, json: async () => ({}) };
+    }));
+    class EventSourceStub {
+      addEventListener() { /* no-op */ }
+      close() { /* no-op */ }
+    }
+    vi.stubGlobal("EventSource", EventSourceStub);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+    const currentApp = within(view.container);
+
+    const checkboxes = await Promise.all(requests.map((item) => currentApp.findByRole("checkbox", { name: `选择请求 ${item.id}` })));
+    checkboxes.forEach((checkbox, index) => {
+      const top = 50 + index * 42;
+      vi.spyOn(checkbox.closest("tr")!, "getBoundingClientRect").mockReturnValue({
+        left: 0, right: 800, top, bottom: top + 42, width: 800, height: 42, x: 0, y: top, toJSON: () => ({}),
+      });
+    });
+    const shell = view.container.querySelector<HTMLDivElement>(".table-shell")!;
+    vi.spyOn(shell, "getBoundingClientRect").mockReturnValue({
+      left: 0, right: 800, top: 0, bottom: 310, width: 800, height: 310, x: 0, y: 0, toJSON: () => ({}),
+    });
+
+    fireEvent.click(currentApp.getByRole("button", { name: "框选" }));
+    expect(currentApp.getByRole("button", { name: "框选" })).toHaveAttribute("aria-pressed", "true");
+    expect(shell).toHaveClass("marquee-mode");
+    fireEvent.pointerDown(checkboxes[0].closest("tr")!, { button: 0, pointerId: 7, clientX: 120, clientY: 60 });
+    fireEvent.pointerMove(shell, { pointerId: 7, clientX: 260, clientY: 210 });
+    expect(shell.querySelector(".selection-box")).toBeInTheDocument();
+    expect(currentApp.getByRole("checkbox", { name: "选择请求 req_box_a" }).closest("tr")).toHaveClass("batch-selected");
+    fireEvent.pointerUp(shell, { pointerId: 7, clientX: 260, clientY: 210 });
+
+    expect(currentApp.getByRole("checkbox", { name: "选择请求 req_box_a" })).toBeChecked();
+    expect(currentApp.getByRole("checkbox", { name: "选择请求 req_box_b" })).toBeChecked();
+    expect(currentApp.getByRole("checkbox", { name: "选择请求 req_box_c" })).toBeChecked();
+    expect(currentApp.getByRole("checkbox", { name: "选择请求 req_box_running" })).not.toBeChecked();
+    expect(currentApp.getByRole("button", { name: "删除 (3)" })).toBeEnabled();
+  });
 });

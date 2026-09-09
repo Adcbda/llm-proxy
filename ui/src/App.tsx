@@ -4,7 +4,7 @@ import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "
 import {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, Check, ChevronRight, CircleDot,
   Clipboard, Code2, Copy, Database, Eye, EyeOff, FileJson, Gauge, KeyRound, ListFilter,
-  Menu, MessageSquare, MoreHorizontal, Network, Pause, Play, Plus, Radio, RefreshCw, RotateCw,
+  Menu, MessageSquare, MoreHorizontal, MousePointer2, Network, Pause, Play, Plus, Radio, RefreshCw, RotateCw,
   Save, Search, Settings, ShieldAlert, Trash2, Wrench, X,
 } from "lucide-react";
 import { api, type CaptureGroup, type Project, type RequestDetail, type RequestFilters, type RequestSummary } from "./api";
@@ -62,7 +62,20 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [saveGroupOpen, setSaveGroupOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [marqueeMode, setMarqueeMode] = useState(false);
+  const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [toast, setToast] = useState("");
+  const tableShellRef = useRef<HTMLDivElement>(null);
+  const marqueeRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startContentX: number;
+    startContentY: number;
+    selecting: boolean;
+    snapshot: Set<string>;
+    moved: boolean;
+  } | null>(null);
 
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: api.listProjects });
   const projects = projectsQuery.data?.items || [];
@@ -155,6 +168,19 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [toast]);
 
+  useEffect(() => {
+    if (!marqueeMode) return;
+    const leaveMarqueeMode = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        marqueeRef.current = null;
+        setSelectionBox(null);
+        setMarqueeMode(false);
+      }
+    };
+    window.addEventListener("keydown", leaveMarqueeMode);
+    return () => window.removeEventListener("keydown", leaveMarqueeMode);
+  }, [marqueeMode]);
+
   const columnHelper = createColumnHelper<RequestSummary>();
   const pageRequests = requestsQuery.data?.items ?? emptyRequests;
   const selectableRequestIds = useMemo(() => pageRequests.filter((item) => item.status !== "running").map((item) => item.id), [pageRequests]);
@@ -174,6 +200,81 @@ export default function App() {
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
+  };
+  const requestIdsInBox = (left: number, top: number, right: number, bottom: number) => {
+    const rows = tableShellRef.current?.querySelectorAll<HTMLTableRowElement>("tbody tr[data-request-id]") ?? [];
+    return Array.from(rows).flatMap((row) => {
+      if (row.dataset.selectable !== "true") return [];
+      const bounds = row.getBoundingClientRect();
+      const intersects = bounds.left <= right && bounds.right >= left && bounds.top <= bottom && bounds.bottom >= top;
+      return intersects && row.dataset.requestId ? [row.dataset.requestId] : [];
+    });
+  };
+  const applyMarqueeSelection = (clientX: number, clientY: number) => {
+    const drag = marqueeRef.current;
+    const shell = tableShellRef.current;
+    if (!drag || !shell) return;
+    const left = Math.min(drag.startClientX, clientX);
+    const right = Math.max(drag.startClientX, clientX);
+    const top = Math.min(drag.startClientY, clientY);
+    const bottom = Math.max(drag.startClientY, clientY);
+    const hits = requestIdsInBox(left, top, right, bottom);
+    const next = new Set(drag.snapshot);
+    hits.forEach((id) => drag.selecting ? next.add(id) : next.delete(id));
+    setSelectedRequestIds(next);
+
+    const shellBounds = shell.getBoundingClientRect();
+    const contentX = clientX - shellBounds.left + shell.scrollLeft;
+    const contentY = clientY - shellBounds.top + shell.scrollTop;
+    setSelectionBox({
+      left: Math.min(drag.startContentX, contentX),
+      top: Math.min(drag.startContentY, contentY),
+      width: Math.abs(contentX - drag.startContentX),
+      height: Math.abs(contentY - drag.startContentY),
+    });
+  };
+  const startMarqueeSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!marqueeMode || event.button !== 0) return;
+    const row = (event.target as HTMLElement).closest<HTMLTableRowElement>("tbody tr[data-request-id]");
+    const shell = tableShellRef.current;
+    if (!row || !shell) return;
+    event.preventDefault();
+    shell.setPointerCapture?.(event.pointerId);
+    const shellBounds = shell.getBoundingClientRect();
+    const requestId = row.dataset.requestId || "";
+    marqueeRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startContentX: event.clientX - shellBounds.left + shell.scrollLeft,
+      startContentY: event.clientY - shellBounds.top + shell.scrollTop,
+      selecting: !selectedRequestIds.has(requestId),
+      snapshot: new Set(selectedRequestIds),
+      moved: false,
+    };
+  };
+  const moveMarqueeSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = marqueeRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.moved && Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY) < 4) return;
+    drag.moved = true;
+    applyMarqueeSelection(event.clientX, event.clientY);
+  };
+  const finishMarqueeSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = marqueeRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.moved) applyMarqueeSelection(event.clientX, event.clientY);
+    const shell = tableShellRef.current;
+    if (shell?.hasPointerCapture?.(event.pointerId)) shell.releasePointerCapture(event.pointerId);
+    marqueeRef.current = null;
+    setSelectionBox(null);
+  };
+  const cancelMarqueeSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = marqueeRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setSelectedRequestIds(drag.snapshot);
+    marqueeRef.current = null;
+    setSelectionBox(null);
   };
   const columns = useMemo(() => [
     columnHelper.display({
@@ -294,18 +395,40 @@ export default function App() {
                 <option value="">全部模式</option><option value="true">Stream</option><option value="false">JSON</option>
               </Select>
               <Button variant="danger" className="batch-delete" disabled={selectedRequestIds.size === 0 || deleteRequests.isPending} onClick={confirmDeleteRequests}>{deleteRequests.isPending ? <Spinner /> : <Trash2 size={15} />}删除{selectedRequestIds.size > 0 ? ` (${selectedRequestIds.size})` : ""}</Button>
+              <Button
+                variant="outline"
+                className={`marquee-toggle ${marqueeMode ? "active" : ""}`}
+                aria-pressed={marqueeMode}
+                title={marqueeMode ? "拖动框选请求，按 Esc 退出" : "开启后可在请求列表中拖动框选"}
+                onClick={() => setMarqueeMode((value) => !value)}
+              ><MousePointer2 size={15} />框选</Button>
               <div className="search-field"><Search size={15} /><Input aria-label="模型筛选" placeholder="筛选模型…" value={filters.model || ""} onChange={(event) => setFilters((value) => ({ ...value, model: event.target.value }))} /></div>
               <Button variant="ghost" aria-label="刷新请求" onClick={() => requestsQuery.refetch()}><RefreshCw size={16} className={requestsQuery.isFetching ? "spin" : ""} /></Button>
             </div>
 
-            <div className="table-shell">
+            <div
+              ref={tableShellRef}
+              className={`table-shell ${marqueeMode ? "marquee-mode" : ""}`}
+              onPointerDown={startMarqueeSelection}
+              onPointerMove={moveMarqueeSelection}
+              onPointerUp={finishMarqueeSelection}
+              onPointerCancel={cancelMarqueeSelection}
+            >
               <table className="request-table">
                 <thead>{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th key={header.id}>{flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead>
                 <tbody>
                   {table.getRowModel().rows.map((row) => {
                     const group = !filters.groupId && row.original.groupId ? captureGroups.find((item) => item.id === row.original.groupId) : undefined;
                     return (
-                      <tr key={row.id} className={`${selectedRequestId === row.original.id ? "selected " : ""}${group ? "capture-group-row" : ""}`} style={group ? captureGroupStyle(group.id) : undefined} title={group ? `抓包分组：${group.name}` : undefined} onClick={() => setSelectedRequestId(row.original.id)}>
+                      <tr
+                        key={row.id}
+                        data-request-id={row.original.id}
+                        data-selectable={row.original.status !== "running"}
+                        className={`${selectedRequestId === row.original.id ? "selected " : ""}${selectedRequestIds.has(row.original.id) ? "batch-selected " : ""}${group ? "capture-group-row" : ""}`}
+                        style={group ? captureGroupStyle(group.id) : undefined}
+                        title={group ? `抓包分组：${group.name}` : undefined}
+                        onClick={() => { if (!marqueeMode) setSelectedRequestId(row.original.id); }}
+                      >
                         {row.getVisibleCells().map((cell) => <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
                       </tr>
                     );
@@ -314,6 +437,7 @@ export default function App() {
               </table>
               {requestsQuery.isLoading && <div className="table-state"><Spinner />加载请求…</div>}
               {!requestsQuery.isLoading && table.getRowModel().rows.length === 0 && <div className="table-state empty"><Network size={28} /><strong>还没有匹配的请求</strong><span>把 OpenAI 客户端 BaseURL 指向 <code>{location.origin}/v1</code></span></div>}
+              {selectionBox && <div className="selection-box" style={selectionBox} aria-hidden="true" />}
             </div>
             <div className="pagination">
               <span>每页最多 50 条</span>

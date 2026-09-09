@@ -85,20 +85,28 @@ code, pre, .mono { font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, mon
 .search-field .input { border: 0; background: transparent; min-width: 0; }
 .batch-delete { min-height: 34px; }
 
-.table-shell { margin-top: 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(10,14,19,.76); overflow-x: auto; min-height: 310px; }
+.table-shell { position: relative; margin-top: 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(10,14,19,.76); overflow-x: auto; min-height: 310px; }
 .request-table { width: 100%; min-width: 940px; border-collapse: collapse; table-layout: auto; }
-.request-table th { height: 37px; padding: 0 13px; color: var(--dim); background: rgba(17,22,29,.72); border-bottom: 1px solid var(--line); text-align: left; text-transform: uppercase; font: 600 9px "IBM Plex Mono", monospace; letter-spacing: .09em; }
-.request-table td { height: 54px; padding: 0 13px; border-bottom: 1px solid var(--line-soft); font-size: 11px; white-space: nowrap; }
-.request-table th:first-child, .request-table td:first-child { width: 42px; padding-inline: 13px 5px; }
+.request-table th { height: 32px; padding: 0 10px; color: var(--dim); background: rgba(17,22,29,.72); border-bottom: 1px solid var(--line); text-align: left; text-transform: uppercase; font: 600 9px "IBM Plex Mono", monospace; letter-spacing: .09em; }
+.request-table td { height: 42px; padding: 0 10px; border-bottom: 1px solid var(--line-soft); font-size: 11px; white-space: nowrap; }
+.request-table th:first-child, .request-table td:first-child { width: 38px; padding-inline: 10px 4px; }
 .request-checkbox { width: 14px; height: 14px; margin: 0; accent-color: var(--cyan); cursor: pointer; vertical-align: middle; }
 .request-checkbox:disabled { cursor: not-allowed; opacity: .3; }
 .request-table tbody tr { cursor: pointer; transition: 120ms ease; }
 .request-table tbody tr:hover, .request-table tbody tr.selected { background: rgba(87,211,216,.035); }
+.request-table tbody tr.batch-selected { background: rgba(87,211,216,.075); }
+.request-table tbody tr.batch-selected td:first-child { box-shadow: inset 2px 0 0 rgba(87,211,216,.75); }
 .request-table tbody tr.capture-group-row { background: linear-gradient(90deg, var(--capture-group-tint), transparent 48%); }
 .request-table tbody tr.capture-group-row:hover { background: linear-gradient(90deg, var(--capture-group-hover), rgba(255,255,255,.012) 58%); }
 .request-table tbody tr.capture-group-row td:first-child { box-shadow: inset 3px 0 0 var(--capture-group-color); }
 .request-table tbody tr.capture-group-row.selected { background: linear-gradient(90deg, var(--capture-group-hover), rgba(87,211,216,.035) 64%); }
+.request-table tbody tr.capture-group-row.batch-selected { background: linear-gradient(90deg, var(--capture-group-hover), rgba(87,211,216,.075) 64%); }
 .request-table tbody tr:last-child td { border-bottom: 0; }
+.marquee-toggle.active { color: var(--cyan); border-color: rgba(87,211,216,.5); background: var(--cyan-soft); }
+.table-shell.marquee-mode, .table-shell.marquee-mode .request-table tbody tr { cursor: crosshair; }
+.table-shell.marquee-mode { user-select: none; touch-action: none; }
+.table-shell.marquee-mode tbody .request-checkbox { pointer-events: none; }
+.selection-box { position: absolute; z-index: 3; pointer-events: none; border: 1px solid rgba(87,211,216,.9); border-radius: 3px; background: rgba(87,211,216,.12); box-shadow: 0 0 0 1px rgba(87,211,216,.08), 0 8px 24px rgba(0,0,0,.2); }
 .endpoint { display: inline-flex; align-items: center; gap: 6px; font: 500 10px "IBM Plex Mono", monospace; color: #b9c7d5; }
 .model-name { color: #d2dbe5; font: 500 10px "IBM Plex Mono", monospace; }
 .http-error { color: var(--red); font-family: "IBM Plex Mono", monospace; }
