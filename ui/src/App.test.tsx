@@ -11,6 +11,26 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it("hides the project sidebar and restores the preference", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ items: [] }) }));
+    const createView = () => {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      return render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+    };
+
+    const firstView = createView();
+    fireEvent.click(await screen.findByRole("button", { name: "隐藏项目侧边栏" }));
+    expect(firstView.container.querySelector(".app-shell")).toHaveClass("sidebar-hidden");
+    expect(window.localStorage.getItem("llm-proxy:sidebar-hidden")).toBe("true");
+    firstView.unmount();
+
+    const restoredView = createView();
+    expect(restoredView.container.querySelector(".app-shell")).toHaveClass("sidebar-hidden");
+    fireEvent.click(await screen.findByRole("button", { name: "显示项目侧边栏" }));
+    expect(restoredView.container.querySelector(".app-shell")).not.toHaveClass("sidebar-hidden");
+    expect(window.localStorage.getItem("llm-proxy:sidebar-hidden")).toBe("false");
+  });
+
   it("shows the first-project workflow and opens the creation dialog", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ items: [] }) }));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

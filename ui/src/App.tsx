@@ -4,7 +4,7 @@ import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "
 import {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, Check, ChevronRight, CircleDot,
   Clipboard, Code2, Copy, Database, Eye, EyeOff, FileJson, Gauge, KeyRound, ListFilter,
-  Menu, MessageSquare, MoreHorizontal, MousePointer2, Network, Pause, Play, Plus, Radio, RefreshCw, RotateCw,
+  Menu, MessageSquare, MoreHorizontal, MousePointer2, Network, PanelLeftClose, PanelLeftOpen, Pause, Play, Plus, Radio, RefreshCw, RotateCw,
   Save, Search, Settings, ShieldAlert, Trash2, Wrench, X,
 } from "lucide-react";
 import { api, type CaptureGroup, type Project, type RequestDetail, type RequestFilters, type RequestSummary } from "./api";
@@ -17,6 +17,15 @@ const statusLabels: Record<string, string> = {
 
 const emptyRequests: RequestSummary[] = [];
 const inspectorWidthStorageKey = "llm-proxy:request-inspector-width";
+const sidebarHiddenStorageKey = "llm-proxy:sidebar-hidden";
+
+function savedSidebarHidden() {
+  try {
+    return window.localStorage.getItem(sidebarHiddenStorageKey) === "true";
+  } catch {
+    return false;
+  }
+}
 
 function inspectorWidthBounds() {
   const viewportWidth = typeof window === "undefined" ? 1440 : window.innerWidth;
@@ -96,6 +105,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [saveGroupOpen, setSaveGroupOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarHidden, setSidebarHidden] = useState(savedSidebarHidden);
   const [marqueeMode, setMarqueeMode] = useState(false);
   const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [toast, setToast] = useState("");
@@ -357,18 +367,27 @@ export default function App() {
     setSidebarOpen(false);
   };
 
+  const setDesktopSidebarHidden = (hidden: boolean) => {
+    setSidebarHidden(hidden);
+    setSidebarOpen(false);
+    try {
+      window.localStorage.setItem(sidebarHiddenStorageKey, String(hidden));
+    } catch { /* localStorage may be unavailable in privacy-restricted contexts */ }
+  };
+
   const copy = async (value: string, message = "已复制") => {
     await navigator.clipboard.writeText(value);
     setToast(message);
   };
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarHidden ? "sidebar-hidden" : ""}`}>
       <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
         <div className="brand">
           <div className="brand-mark"><Network size={20} /></div>
           <div><strong>LLM Proxy</strong><span>REQUEST INSPECTOR</span></div>
-          <Button variant="ghost" className="sidebar-close" onClick={() => setSidebarOpen(false)}><X size={18} /></Button>
+          <Button variant="ghost" className="sidebar-collapse" aria-label="隐藏项目侧边栏" title="隐藏项目侧边栏" onClick={() => setDesktopSidebarHidden(true)}><PanelLeftClose size={18} /></Button>
+          <Button variant="ghost" className="sidebar-close" aria-label="关闭项目侧边栏" onClick={() => setSidebarOpen(false)}><X size={18} /></Button>
         </div>
         <div className="sidebar-heading"><span>项目</span><Button variant="ghost" aria-label="新建项目" onClick={() => setCreateOpen(true)}><Plus size={17} /></Button></div>
         <nav className="project-list">
@@ -391,7 +410,8 @@ export default function App() {
       <main className="main-panel">
         <header className="topbar">
           <div className="topbar-title">
-            <Button variant="ghost" className="mobile-menu" onClick={() => setSidebarOpen(true)}><Menu size={19} /></Button>
+            <Button variant="ghost" className="sidebar-expand" aria-label="显示项目侧边栏" title="显示项目侧边栏" onClick={() => setDesktopSidebarHidden(false)}><PanelLeftOpen size={19} /></Button>
+            <Button variant="ghost" className="mobile-menu" aria-label="打开项目侧边栏" onClick={() => setSidebarOpen(true)}><Menu size={19} /></Button>
             <div><div className={`eyebrow capture-${selectedProject?.captureState || "idle"}`}><CircleDot size={12} /> {selectedProject?.captureState === "capturing" ? "CAPTURE ACTIVE" : selectedProject?.captureState === "paused" ? "CAPTURE PAUSED" : "CAPTURE READY"}</div><h1>{selectedProject?.name || "LLM 请求调试台"}</h1></div>
           </div>
           <div className="topbar-actions">
