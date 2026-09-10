@@ -100,6 +100,7 @@ BaseURL 按 SDK 的 API 根地址处理。例如上游填写 `https://api.openai
 - `POST /api/projects/{id}/test-upstream`
 - `POST /api/projects/{id}/capture/start`
 - `POST /api/projects/{id}/capture/pause`
+- `POST /api/projects/{id}/capture/clear`（删除本轮已结束的请求，保留历史分组和运行中的请求）
 - `GET/POST /api/projects/{id}/capture-groups`（POST 请求体为 `{ "name": "...", "requestIds": ["req_..."] }`，需选择 1–100 条已结束、非运行中的请求）
 - `GET/DELETE /api/projects/{id}/requests`
 - `POST /api/projects/{id}/requests/batch-delete`（请求体为 `{ "ids": ["req_..."] }`，单次最多 100 条）

@@ -162,6 +162,8 @@ func (server *Server) routeAPI(writer http.ResponseWriter, request *http.Request
 				server.requireMethod(writer, request, http.MethodPost, func() { server.startCapture(writer, request, projectID) })
 			case "pause":
 				server.requireMethod(writer, request, http.MethodPost, func() { server.pauseCapture(writer, request, projectID) })
+			case "clear":
+				server.requireMethod(writer, request, http.MethodPost, func() { server.clearCurrentCapture(writer, request, projectID) })
 			default:
 				writeAPIError(writer, http.StatusNotFound, "not found")
 			}

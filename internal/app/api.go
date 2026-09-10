@@ -264,6 +264,16 @@ func (server *Server) pauseCapture(writer http.ResponseWriter, request *http.Req
 	writeJSON(writer, http.StatusOK, project)
 }
 
+func (server *Server) clearCurrentCapture(writer http.ResponseWriter, request *http.Request, projectID string) {
+	deleted, err := server.store.ClearCurrentCaptureRequests(request.Context(), projectID)
+	if err != nil {
+		handleStoreError(writer, err)
+		return
+	}
+	server.events.Publish(LiveEvent{Type: "requests_cleared", ProjectID: projectID})
+	writeJSON(writer, http.StatusOK, map[string]any{"deleted": deleted})
+}
+
 func (server *Server) listCaptureGroups(writer http.ResponseWriter, request *http.Request, projectID string) {
 	groups, err := server.store.ListCaptureGroups(request.Context(), projectID)
 	if err != nil {

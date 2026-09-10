@@ -133,6 +133,18 @@ export default function App() {
     mutationFn: () => api.pauseCapture(selectedProjectId),
     onSuccess: () => { refreshCapture(); setToast("抓包已暂停"); },
   });
+  const clearCurrentCapture = useMutation({
+    mutationFn: () => api.clearCurrentCapture(selectedProjectId),
+    onSuccess: (result) => {
+      setSelectedRequestId("");
+      setSelectedRequestIds(new Set());
+      setCursor("");
+      setCursorHistory([]);
+      refreshCapture();
+      setToast(result.deleted > 0 ? `已清空本轮抓包，共 ${result.deleted} 条请求` : "本轮没有可清除的已结束请求");
+    },
+    onError: (error: Error) => setToast(error.message),
+  });
 
   useEffect(() => {
     if (!selectedProjectId && projects[0]) setSelectedProjectId(projects[0].id);
@@ -334,6 +346,12 @@ export default function App() {
     deleteRequests.mutate(ids);
   };
 
+  const confirmClearCurrentCapture = () => {
+    if (!selectedProject || selectedProject.captureState === "idle" || selectedProject.captureRequestCount === 0) return;
+    if (!window.confirm("确定清空本轮抓包吗？本轮已结束的请求将被删除，历史分组和运行中的请求不会受影响。")) return;
+    clearCurrentCapture.mutate();
+  };
+
   const selectProject = (id: string) => {
     setSelectedProjectId(id);
     setSidebarOpen(false);
@@ -423,6 +441,13 @@ export default function App() {
                 onClick={() => setMarqueeMode((value) => !value)}
               ><MousePointer2 size={15} />框选</Button>
               <Button variant="danger" className="batch-delete" disabled={selectedRequestIds.size === 0 || deleteRequests.isPending} onClick={confirmDeleteRequests}>{deleteRequests.isPending ? <Spinner /> : <Trash2 size={15} />}删除{selectedRequestIds.size > 0 ? ` (${selectedRequestIds.size})` : ""}</Button>
+              <Button
+                variant="danger"
+                className="batch-delete"
+                disabled={selectedProject.captureState === "idle" || selectedProject.captureRequestCount === 0 || clearCurrentCapture.isPending}
+                title={selectedProject.captureState === "idle" ? "当前没有抓包轮次" : selectedProject.captureRequestCount === 0 ? "本轮暂无请求" : undefined}
+                onClick={confirmClearCurrentCapture}
+              >{clearCurrentCapture.isPending ? <Spinner /> : <Trash2 size={15} />}清空本轮抓包</Button>
               <div className="filter-icon"><ListFilter size={17} /><span>筛选</span></div>
               {captureGroups.length > 0 && <Select aria-label="抓包分组筛选" value={filters.groupId || ""} onChange={(event) => setFilters((value) => ({ ...value, groupId: event.target.value }))}>
                 <option value="">全部抓包</option>{captureGroups.map((group) => <option key={group.id} value={group.id}>{group.name} ({group.requestCount})</option>)}

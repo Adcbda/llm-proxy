@@ -880,6 +880,37 @@ func (s *Store) ClearProjectRequests(ctx context.Context, projectID string) (int
 	return deleted, nil
 }
 
+func (s *Store) ClearCurrentCaptureRequests(ctx context.Context, projectID string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var sessionID string
+	if err := tx.QueryRowContext(ctx, `SELECT capture_session_id FROM projects WHERE id = ?`, projectID).Scan(&sessionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	var deleted int64
+	if sessionID != "" {
+		result, err := tx.ExecContext(ctx, `DELETE FROM request_logs
+			WHERE project_id = ? AND capture_session_id = ? AND status != 'running'`, projectID, sessionID)
+		if err != nil {
+			return 0, err
+		}
+		deleted, err = result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
 func (s *Store) DeleteRequests(ctx context.Context, projectID string, ids []string) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil

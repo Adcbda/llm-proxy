@@ -94,6 +94,7 @@ export const api = {
   deleteRequests: (id: string, ids: string[]) => call<{ deleted: number }>(`/api/projects/${id}/requests/batch-delete`, { method: "POST", body: JSON.stringify({ ids }) }),
   startCapture: (id: string) => call<Project>(`/api/projects/${id}/capture/start`, { method: "POST" }),
   pauseCapture: (id: string) => call<Project>(`/api/projects/${id}/capture/pause`, { method: "POST" }),
+  clearCurrentCapture: (id: string) => call<{ deleted: number }>(`/api/projects/${id}/capture/clear`, { method: "POST" }),
   listCaptureGroups: (id: string) => call<{ items: CaptureGroup[] }>(`/api/projects/${id}/capture-groups`),
   saveCaptureGroup: (id: string, name: string, requestIds: string[]) => call<CaptureGroup>(`/api/projects/${id}/capture-groups`, { method: "POST", body: JSON.stringify({ name, requestIds }) }),
   listRequests: (projectId: string, filters: RequestFilters = {}, cursor = "") => {

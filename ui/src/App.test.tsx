@@ -267,6 +267,54 @@ describe("App", () => {
     expect(JSON.parse(String(deleteCall?.[1]?.body))).toEqual({ ids: ["req_delete_a", "req_delete_b"] });
   });
 
+  it("clears only the current capture round after confirmation", async () => {
+    const now = new Date().toISOString();
+    let requests = ["req_current_a", "req_current_b"];
+    const project = () => ({
+      id: "prj_test", name: "Clear capture test", baseUrl: "http://upstream.test/v1",
+      upstreamApiKeyMasked: "", apiKeyPrefix: "llmp_test", createdAt: now, updatedAt: now,
+      requestCount: requests.length, captureState: "capturing" as const, captureStartedAt: now,
+      capturePausedAt: null, captureRequestCount: requests.length,
+    });
+    const request = (id: string) => ({
+      id, projectId: "prj_test", method: "POST", path: "/v1/chat/completions", model: id,
+      streaming: false, status: "completed", httpStatus: 200, startedAt: now, finishedAt: now,
+      durationMs: 10, requestTruncated: false, responseTruncated: false, requestBytes: 10, responseBytes: 20,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/capture/clear") && init?.method === "POST") {
+        const deleted = requests.length;
+        requests = [];
+        return { ok: true, json: async () => ({ deleted }) };
+      }
+      if (url === "/api/projects") return { ok: true, json: async () => ({ items: [project()] }) };
+      if (url.includes("/capture-groups")) return { ok: true, json: async () => ({ items: [] }) };
+      if (url.includes("/requests")) return { ok: true, json: async () => ({ items: requests.map(request) }) };
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+    class EventSourceStub {
+      addEventListener() { /* no-op */ }
+      close() { /* no-op */ }
+    }
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("EventSource", EventSourceStub);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+    const currentApp = within(view.container);
+
+    const clearButton = await currentApp.findByRole("button", { name: "清空本轮抓包" });
+    expect(clearButton).toBeEnabled();
+    fireEvent.click(clearButton);
+
+    expect(await currentApp.findByText("已清空本轮抓包，共 2 条请求")).toBeInTheDocument();
+    expect(window.confirm).toHaveBeenCalledWith("确定清空本轮抓包吗？本轮已结束的请求将被删除，历史分组和运行中的请求不会受影响。");
+    const clearCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/capture/clear"));
+    expect(clearCall?.[1]?.method).toBe("POST");
+    expect(await currentApp.findByRole("button", { name: "清空本轮抓包" })).toBeDisabled();
+  });
+
   it("box-selects multiple completed rows and skips running requests", async () => {
     vi.stubGlobal("PointerEvent", MouseEvent);
     const now = new Date().toISOString();
