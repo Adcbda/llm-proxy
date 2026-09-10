@@ -16,15 +16,16 @@ import (
 )
 
 type Server struct {
-	config     Config
-	store      *Store
-	vault      *Vault
-	client     *http.Client
-	events     *EventHub
-	active     *ActiveCaptures
-	staticFS   fs.FS
-	logger     *slog.Logger
-	background context.CancelFunc
+	config       Config
+	store        *Store
+	vault        *Vault
+	client       *http.Client
+	events       *EventHub
+	active       *ActiveCaptures
+	staticFS     fs.FS
+	logger       *slog.Logger
+	background   context.CancelFunc
+	sessionToken string
 }
 
 func NewServer(config Config, store *Store, vault *Vault, staticFS fs.FS, logger *slog.Logger) *Server {
@@ -41,6 +42,7 @@ func NewServer(config Config, store *Store, vault *Vault, staticFS fs.FS, logger
 			},
 		},
 		events: NewEventHub(), active: NewActiveCaptures(),
+		sessionToken: newSessionToken(),
 	}
 }
 
@@ -90,7 +92,14 @@ func (server *Server) route(writer http.ResponseWriter, request *http.Request) {
 		server.handleProxy(writer, request, "/models")
 	case strings.HasPrefix(request.URL.Path, "/v1/"):
 		writeOpenAIError(writer, http.StatusNotFound, "unsupported_endpoint", "only POST /v1/chat/completions and GET /v1/models are supported")
+	case strings.HasPrefix(request.URL.Path, "/api/auth/"):
+		server.routeAuth(writer, request)
 	case strings.HasPrefix(request.URL.Path, "/api/"):
+		if !server.authenticated(request) {
+			writer.Header().Set("Cache-Control", "no-store")
+			writeAPIError(writer, http.StatusUnauthorized, "请先登录")
+			return
+		}
 		server.routeAPI(writer, request)
 	default:
 		server.serveStatic(writer, request)

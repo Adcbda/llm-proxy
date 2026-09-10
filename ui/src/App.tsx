@@ -4,10 +4,10 @@ import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "
 import {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, Check, ChevronRight, CircleDot,
   Clipboard, Code2, Copy, Database, Eye, EyeOff, FileJson, Gauge, KeyRound, ListFilter,
-  Menu, MessageSquare, MoreHorizontal, MousePointer2, Network, PanelLeftClose, PanelLeftOpen, Pause, Play, Plus, Radio, RefreshCw, RotateCw,
+  LockKeyhole, LogOut, Menu, MessageSquare, MoreHorizontal, MousePointer2, Network, PanelLeftClose, PanelLeftOpen, Pause, Play, Plus, Radio, RefreshCw, RotateCw,
   Save, Search, Settings, ShieldAlert, Trash2, Wrench, X,
 } from "lucide-react";
-import { api, type CaptureGroup, type Project, type RequestDetail, type RequestFilters, type RequestSummary } from "./api";
+import { api, type AuthStatus, type CaptureGroup, type Project, type RequestDetail, type RequestFilters, type RequestSummary } from "./api";
 import { extractMessages, formatBytes, formatDuration, formatTime, modelList, parseEmbeddedJSON, parseJSON, parseSSEEvents, prettyBody, textPreview, type InspectorMessage } from "./lib";
 import { Badge, Button, Dialog, Field, Input, Select, Spinner, Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui";
 
@@ -94,6 +94,75 @@ function SelectionCheckbox({ checked, indeterminate = false, ...props }: React.I
 }
 
 export default function App() {
+  const queryClient = useQueryClient();
+  const authQuery = useQuery({ queryKey: ["auth"], queryFn: api.authStatus, retry: false, staleTime: Infinity });
+
+  useEffect(() => {
+    const requireLogin = () => queryClient.setQueryData<AuthStatus>(["auth"], { authenticated: false, authRequired: true });
+    window.addEventListener("llm-proxy:unauthorized", requireLogin);
+    return () => window.removeEventListener("llm-proxy:unauthorized", requireLogin);
+  }, [queryClient]);
+
+  if (authQuery.isLoading) return <AuthLoading />;
+  if (authQuery.isError) return <AuthUnavailable onRetry={() => authQuery.refetch()} />;
+  if (authQuery.data?.authenticated === false) {
+    return <LoginScreen onLogin={(status) => queryClient.setQueryData(["auth"], status)} />;
+  }
+
+  const auth = authQuery.data;
+  return <Dashboard auth={auth} onLogout={async () => {
+    const status = await api.logout();
+    queryClient.clear();
+    queryClient.setQueryData(["auth"], status);
+  }} />;
+}
+
+function AuthLoading() {
+  return <main className="auth-screen"><div className="auth-loading"><Spinner /><span>正在检查登录状态…</span></div></main>;
+}
+
+function AuthUnavailable({ onRetry }: { onRetry: () => void }) {
+  return (
+    <main className="auth-screen">
+      <section className="auth-card auth-state-card">
+        <AlertTriangle size={24} />
+        <h1>无法连接到服务</h1>
+        <p>登录状态检查失败，请确认后端服务正在运行。</p>
+        <Button variant="outline" onClick={onRetry}><RefreshCw size={14} />重试</Button>
+      </section>
+    </main>
+  );
+}
+
+function LoginScreen({ onLogin }: { onLogin: (status: AuthStatus) => void }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const login = useMutation({ mutationFn: () => api.login(username, password), onSuccess: onLogin });
+
+  return (
+    <main className="auth-screen">
+      <section className="auth-card">
+        <div className="auth-brand-mark"><Network size={25} /></div>
+        <div className="auth-heading"><span>LLM PROXY</span><h1>登录请求调试台</h1><p>请输入 `.env` 中配置的单用户账号。</p></div>
+        <form className="auth-form" onSubmit={(event) => { event.preventDefault(); login.mutate(); }}>
+          <Field label="用户名"><Input name="username" autoComplete="username" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} /></Field>
+          <Field label="密码">
+            <div className="password-input">
+              <Input name="password" type={showPassword ? "text" : "password"} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} />
+              <button type="button" aria-label={showPassword ? "隐藏密码" : "显示密码"} onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff size={15} /> : <Eye size={15} />}</button>
+            </div>
+          </Field>
+          {login.isError && <div className="form-error"><AlertTriangle size={14} />{(login.error as Error).message}</div>}
+          <Button type="submit" disabled={login.isPending || !username}>{login.isPending ? <Spinner /> : <LockKeyhole size={15} />}登录</Button>
+        </form>
+        <p className="auth-footnote">账号或密码修改后请重启服务。</p>
+      </section>
+    </main>
+  );
+}
+
+function Dashboard({ auth, onLogout }: { auth?: AuthStatus; onLogout: () => Promise<void> }) {
   const queryClient = useQueryClient();
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedRequestId, setSelectedRequestId] = useState("");
@@ -434,11 +503,12 @@ export default function App() {
               <Button variant="outline" className="copy-baseurl" onClick={() => copy(`${location.origin}/v1`, "BaseURL 已复制")}><Copy size={15} />复制 BaseURL</Button>
               <Button variant="ghost" aria-label="项目设置" onClick={() => setSettingsOpen(true)}><Settings size={18} /></Button>
             </>}
+            {auth?.authRequired && <Button variant="ghost" aria-label="退出登录" title={`退出 ${auth.username || "当前账号"}`} onClick={() => void onLogout().catch(() => undefined)}><LogOut size={18} /></Button>}
           </div>
         </header>
 
         {location.hostname !== "127.0.0.1" && location.hostname !== "localhost" && (
-          <div className="public-warning"><AlertTriangle size={16} /><span>当前通过非本机地址访问。管理台没有登录保护，请确认网络边界可信。</span></div>
+          <div className="public-warning"><AlertTriangle size={16} /><span>当前通过非本机地址访问，请确认网络边界和传输安全。</span></div>
         )}
 
         {!selectedProject ? (

@@ -8,6 +8,11 @@ services:
     volumes:
       - llm-proxy-data:/data
     environment:
+      LLMPROXY_LISTEN: "0.0.0.0:8080"
+      LLMPROXY_DATA_DIR: "/data"
+      LLMPROXY_USERNAME: "${LLMPROXY_USERNAME:-admin}"
+      LLMPROXY_PASSWORD: "${LLMPROXY_PASSWORD:-admin}"
+      NOAUTH: "${NOAUTH:-false}"
       LLMPROXY_CAPTURE_MAX_BYTES: "33554432"
       LLMPROXY_RETENTION_DAYS: "7"
       LLMPROXY_MAX_REQUESTS_PER_PROJECT: "10000"
@@ -15,4 +20,3 @@ services:
 
 volumes:
   llm-proxy-data:
-

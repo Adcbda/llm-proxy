@@ -3,6 +3,15 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
+function authenticatedFetch(implementation: (input: RequestInfo | URL, init?: RequestInit) => Promise<unknown>) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/auth/status") {
+      return { ok: true, json: async () => ({ authenticated: true, authRequired: true, username: "admin" }) };
+    }
+    return implementation(input, init);
+  });
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -11,8 +20,35 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it("logs in with the configured single-user credentials", async () => {
+    let loginInput: { username: string; password: string } | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/auth/status") {
+        return { ok: true, json: async () => ({ authenticated: false, authRequired: true }) };
+      }
+      if (url === "/api/auth/login" && init?.method === "POST") {
+        loginInput = JSON.parse(String(init.body));
+        return { ok: true, json: async () => ({ authenticated: true, authRequired: true, username: loginInput?.username }) };
+      }
+      if (url === "/api/projects") return { ok: true, json: async () => ({ items: [] }) };
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+
+    expect(await screen.findByRole("heading", { name: "登录请求调试台" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("用户名"), { target: { value: "admin" } });
+    fireEvent.change(screen.getByLabelText("密码"), { target: { value: "admin" } });
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+
+    expect(await screen.findByRole("button", { name: "创建项目" })).toBeInTheDocument();
+    expect(loginInput).toEqual({ username: "admin", password: "admin" });
+  });
+
   it("hides the project sidebar and restores the preference", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ items: [] }) }));
+    vi.stubGlobal("fetch", authenticatedFetch(async () => ({ ok: true, json: async () => ({ items: [] }) })));
     const createView = () => {
       const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       return render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
@@ -25,14 +61,15 @@ describe("App", () => {
     firstView.unmount();
 
     const restoredView = createView();
+    const showSidebar = await screen.findByRole("button", { name: "显示项目侧边栏" });
     expect(restoredView.container.querySelector(".app-shell")).toHaveClass("sidebar-hidden");
-    fireEvent.click(await screen.findByRole("button", { name: "显示项目侧边栏" }));
+    fireEvent.click(showSidebar);
     expect(restoredView.container.querySelector(".app-shell")).not.toHaveClass("sidebar-hidden");
     expect(window.localStorage.getItem("llm-proxy:sidebar-hidden")).toBe("false");
   });
 
   it("shows the first-project workflow and opens the creation dialog", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ items: [] }) }));
+    vi.stubGlobal("fetch", authenticatedFetch(async () => ({ ok: true, json: async () => ({ items: [] }) })));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
     const action = await screen.findByRole("button", { name: "创建项目" });
@@ -57,7 +94,7 @@ describe("App", () => {
       streaming: false, status: "completed", httpStatus: 200, startedAt: now, finishedAt: now,
       durationMs: 10, requestTruncated: false, responseTruncated: false, requestBytes: 10, responseBytes: 20,
     });
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = authenticatedFetch(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/capture/pause") && init?.method === "POST") {
         captureState = "paused";
@@ -116,7 +153,7 @@ describe("App", () => {
       streaming: false, status: "completed", httpStatus: 200, startedAt: now, finishedAt: now,
       durationMs: 10, requestTruncated: false, responseTruncated: false, requestBytes: 10, responseBytes: 20,
     });
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    vi.stubGlobal("fetch", authenticatedFetch(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/projects") return { ok: true, json: async () => ({ items: [project] }) };
       if (url.includes("/capture-groups")) return { ok: true, json: async () => ({ items: groups }) };
@@ -163,7 +200,7 @@ describe("App", () => {
       aggregatedResponse: "",
       toolTimingEstimate: { durationMs: 875, previousRequestId: "req_previous", toolCallIds: ["call_a", "call_b"] },
     };
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    vi.stubGlobal("fetch", authenticatedFetch(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/projects") return { ok: true, json: async () => ({ items: [project] }) };
       if (url.includes("/capture-groups")) return { ok: true, json: async () => ({ items: [] }) };
@@ -206,7 +243,7 @@ describe("App", () => {
       responseBody: JSON.stringify({ choices: [{ message: { role: "assistant", content: "hi" } }] }),
       aggregatedResponse: "",
     };
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    vi.stubGlobal("fetch", authenticatedFetch(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/projects") return { ok: true, json: async () => ({ items: [project] }) };
       if (url.includes("/capture-groups")) return { ok: true, json: async () => ({ items: [] }) };
@@ -251,7 +288,7 @@ describe("App", () => {
       responseTruncated: false, requestBytes: 10, responseBytes: 20,
     });
     let requests = [request("req_delete_a", "completed"), request("req_delete_b", "completed"), request("req_running", "running")];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = authenticatedFetch(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/requests/batch-delete") && init?.method === "POST") {
         const inputBody = JSON.parse(String(init.body)) as { ids: string[] };
@@ -301,7 +338,7 @@ describe("App", () => {
       streaming: false, status: "completed", httpStatus: 200, startedAt: now, finishedAt: now,
       durationMs: 10, requestTruncated: false, responseTruncated: false, requestBytes: 10, responseBytes: 20,
     });
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = authenticatedFetch(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/capture/clear") && init?.method === "POST") {
         const deleted = requests.length;
@@ -351,7 +388,7 @@ describe("App", () => {
       responseTruncated: false, requestBytes: 10, responseBytes: 20,
     });
     const requests = [request("req_box_a"), request("req_box_b"), request("req_box_c"), request("req_box_running", "running")];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    vi.stubGlobal("fetch", authenticatedFetch(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/projects") return { ok: true, json: async () => ({ items: [project] }) };
       if (url.includes("/capture-groups")) return { ok: true, json: async () => ({ items: [] }) };

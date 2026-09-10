@@ -2,7 +2,10 @@ module llm-proxy
 
 go 1.22.0
 
-require modernc.org/sqlite v1.29.10
+require (
+	github.com/joho/godotenv v1.5.1
+	modernc.org/sqlite v1.29.10
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

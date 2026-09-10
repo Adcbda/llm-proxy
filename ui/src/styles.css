@@ -31,6 +31,25 @@ button, input, select, textarea { font: inherit; }
 button { color: inherit; }
 code, pre, .mono { font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace; }
 
+.auth-screen { min-height: 100vh; padding: 24px; display: grid; place-items: center; background: radial-gradient(circle at 50% 0%, rgba(87,211,216,.12), transparent 34%), linear-gradient(145deg, #07090d, #090d13 62%, #07090d); }
+.auth-card { width: min(390px, 100%); padding: 32px; border: 1px solid #273240; border-radius: 13px; background: rgba(12,16,22,.94); box-shadow: 0 28px 100px rgba(0,0,0,.5); }
+.auth-brand-mark { width: 48px; height: 48px; display: grid; place-items: center; color: var(--cyan); border: 1px solid rgba(87,211,216,.38); border-radius: 12px; background: var(--cyan-soft); box-shadow: 0 0 32px rgba(87,211,216,.1); }
+.auth-heading { margin-top: 23px; }
+.auth-heading > span { color: var(--cyan); font: 600 9px "IBM Plex Mono", monospace; letter-spacing: .18em; }
+.auth-heading h1, .auth-state-card h1 { margin: 8px 0 0; font-size: 21px; letter-spacing: -.03em; }
+.auth-heading p, .auth-state-card p { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.auth-form { margin-top: 25px; display: flex; flex-direction: column; gap: 16px; }
+.auth-form > .button { min-height: 38px; margin-top: 3px; }
+.password-input { position: relative; }
+.password-input .input { padding-right: 39px; }
+.password-input button { position: absolute; top: 0; right: 0; width: 36px; height: 34px; display: grid; place-items: center; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
+.password-input button:hover { color: var(--text); }
+.auth-footnote { margin: 20px 0 0; color: var(--dim); text-align: center; font: 400 9px "IBM Plex Mono", monospace; }
+.auth-loading { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 11px; }
+.auth-state-card { text-align: center; }
+.auth-state-card > svg { color: var(--amber); }
+.auth-state-card .button { margin-top: 22px; }
+
 .app-shell { min-height: 100vh; display: flex; }
 .sidebar { position: fixed; inset: 0 auto 0 0; width: 248px; display: flex; flex-direction: column; visibility: visible; background: rgba(9, 12, 17, .96); border-right: 1px solid var(--line); z-index: 30; backdrop-filter: blur(18px); transition: transform 180ms ease, visibility 0s; }
 .brand { height: 76px; padding: 0 17px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line-soft); }

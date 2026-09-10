@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -15,9 +18,16 @@ type Config struct {
 	RetentionDays         int
 	MaxRequestsPerProject int
 	UpstreamHeaderTimeout time.Duration
+	Username              string
+	Password              string
+	NoAuth                bool
 }
 
 func LoadConfig() (Config, error) {
+	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
+		return Config{}, fmt.Errorf("load .env: %w", err)
+	}
+
 	cfg := Config{
 		ListenAddress:         envString("LLMPROXY_LISTEN", "127.0.0.1:8080"),
 		DataDir:               envString("LLMPROXY_DATA_DIR", "./data"),
@@ -25,6 +35,8 @@ func LoadConfig() (Config, error) {
 		RetentionDays:         7,
 		MaxRequestsPerProject: 10_000,
 		UpstreamHeaderTimeout: 5 * time.Minute,
+		Username:              envString("LLMPROXY_USERNAME", "admin"),
+		Password:              envString("LLMPROXY_PASSWORD", "admin"),
 	}
 
 	var err error
@@ -40,6 +52,9 @@ func LoadConfig() (Config, error) {
 	if cfg.UpstreamHeaderTimeout, err = envDuration("LLMPROXY_UPSTREAM_HEADER_TIMEOUT", cfg.UpstreamHeaderTimeout); err != nil {
 		return Config{}, err
 	}
+	if cfg.NoAuth, err = envBool("NOAUTH", false); err != nil {
+		return Config{}, err
+	}
 	if cfg.CaptureMaxBytes < 1024 {
 		return Config{}, fmt.Errorf("LLMPROXY_CAPTURE_MAX_BYTES must be at least 1024")
 	}
@@ -52,6 +67,21 @@ func LoadConfig() (Config, error) {
 	}
 	cfg.DataDir = abs
 	return cfg, nil
+}
+
+func envBool(name string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s must be a boolean such as true or false", name)
+	}
 }
 
 func envString(name, fallback string) string {

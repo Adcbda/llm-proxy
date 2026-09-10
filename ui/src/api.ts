@@ -66,6 +66,12 @@ export type RequestFilters = {
   groupId?: string;
 };
 
+export type AuthStatus = {
+  authenticated: boolean;
+  authRequired: boolean;
+  username?: string;
+};
+
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -73,6 +79,9 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401 && !url.startsWith("/api/auth/")) {
+      window.dispatchEvent(new Event("llm-proxy:unauthorized"));
+    }
     const message = payload?.error?.message || `请求失败 (${response.status})`;
     throw new Error(message);
   }
@@ -80,6 +89,9 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  authStatus: () => call<AuthStatus>("/api/auth/status"),
+  login: (username: string, password: string) => call<AuthStatus>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+  logout: () => call<AuthStatus>("/api/auth/logout", { method: "POST" }),
   listProjects: () => call<{ items: Project[] }>("/api/projects"),
   createProject: (input: { name: string; baseUrl: string; upstreamApiKey: string }) =>
     call<{ project: Project; apiKey: string }>("/api/projects", { method: "POST", body: JSON.stringify(input) }),

@@ -11,7 +11,7 @@
 - 请求详情展示本轮模型总耗时；相邻请求的 `tool_call_id` 匹配时，还会展示从上一轮响应结束到工具结果回传的推算耗时（包含 Agent 调度开销，并发工具共享批次耗时）
 - 可按项目开启或暂停抓包；暂停后可勾选指定请求保存为命名分组，并按分组回看
 - SQLite 持久化；项目 Key 与上游 Key 使用 AES-256-GCM 加密
-- 默认仅监听 `127.0.0.1:8080`，管理台不包含登录系统
+- 默认仅监听 `127.0.0.1:8080`，管理台使用单用户账号登录
 
 其他 `/v1/*` 路径会返回 OpenAI 风格的 `unsupported_endpoint` 错误。
 
@@ -23,7 +23,7 @@
 docker compose up --build
 ```
 
-打开 <http://127.0.0.1:8080>。Compose 只把端口映射到宿主机回环地址，数据保存在命名卷 `llm-proxy-data`。
+打开 <http://127.0.0.1:8080>，默认账号和密码均为 `admin`。Compose 只把端口映射到宿主机回环地址，数据保存在命名卷 `llm-proxy-data`。
 
 ### 本地构建
 
@@ -42,6 +42,8 @@ make dev-ui
 ```
 
 Vite 调试台会把 `/api`、`/v1` 和 `/healthz` 转发到 `127.0.0.1:8080`。
+
+服务启动时会自动读取当前目录的 `.env`，操作系统环境变量的优先级高于 `.env`。修改登录账号或密码后需要重启服务。
 
 ## 接入 OpenAI 客户端
 
@@ -71,6 +73,9 @@ BaseURL 按 SDK 的 API 根地址处理。例如上游填写 `https://api.openai
 | --- | --- | --- |
 | `LLMPROXY_LISTEN` | `127.0.0.1:8080` | HTTP 监听地址 |
 | `LLMPROXY_DATA_DIR` | `./data` | SQLite 与主密钥目录 |
+| `LLMPROXY_USERNAME` | `admin` | 管理台单用户账号，明文配置 |
+| `LLMPROXY_PASSWORD` | `admin` | 管理台密码，明文配置且无强度限制 |
+| `NOAUTH` | `false` | 设置为 `true`、`1`、`yes` 或 `on` 时关闭管理台登录 |
 | `LLMPROXY_CAPTURE_MAX_BYTES` | `33554432` | 单个请求体或响应体最多记录的字节数；超出后仍继续转发 |
 | `LLMPROXY_RETENTION_DAYS` | `7` | 记录保留天数；`0` 表示不按天数清理 |
 | `LLMPROXY_MAX_REQUESTS_PER_PROJECT` | `10000` | 每项目最多记录数；`0` 表示不按条数清理 |
@@ -85,7 +90,10 @@ BaseURL 按 SDK 的 API 根地址处理。例如上游填写 `https://api.openai
 
 ## 安全说明
 
-- 管理台没有身份认证，默认不要监听公网地址。
+- 管理台默认使用 `.env` 中的单用户账号认证。默认密码仅用于初始化，请按需直接修改 `.env` 并重启服务。
+- 登录 Cookie 为 HttpOnly、SameSite=Strict 的会话 Cookie，服务重启后已有会话会失效。通过 HTTPS 访问时还会设置 Secure 属性。
+- `NOAUTH=true` 会完全关闭管理 API 的登录保护，仅应在可信网络中使用。
+- `/v1/*` 仍使用每个项目自己的 API Key，不受管理台登录和 `NOAUTH` 设置影响；`/healthz` 也保持公开。
 - `Authorization`、`api-key`、Cookie 等敏感 Header 在抓包记录中会替换为 `[REDACTED]`。
 - 请求与响应正文不会脱敏，因为它们是调试内容；请把数据目录视作敏感数据。
 - 项目 API Key 可在管理台随时解密查看；轮换后旧 Key 立即失效。
@@ -93,6 +101,9 @@ BaseURL 按 SDK 的 API 根地址处理。例如上游填写 `https://api.openai
 
 ## 管理 API
 
+- `GET /api/auth/status`
+- `POST /api/auth/login`（请求体为 `{ "username": "...", "password": "..." }`）
+- `POST /api/auth/logout`
 - `GET/POST /api/projects`
 - `GET/PATCH/DELETE /api/projects/{id}`
 - `POST /api/projects/{id}/reveal-key`
