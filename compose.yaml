@@ -5,8 +5,10 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
+    user: "${USER_UID:-1000}:${USER_GID:-1000}"
     volumes:
-      - llm-proxy-data:/data
+      - ./data:/data
+      #- llm-proxy-data:/data
     environment:
       LLMPROXY_LISTEN: "0.0.0.0:8080"
       LLMPROXY_DATA_DIR: "/data"
@@ -18,5 +20,5 @@ services:
       LLMPROXY_MAX_REQUESTS_PER_PROJECT: "10000"
       LLMPROXY_UPSTREAM_HEADER_TIMEOUT: "5m"
 
-volumes:
-  llm-proxy-data:
+# volumes:
+#   llm-proxy-data:
