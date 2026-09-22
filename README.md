@@ -77,8 +77,8 @@ BaseURL 按 SDK 的 API 根地址处理。例如上游填写 `https://api.openai
 | `LLMPROXY_PASSWORD` | `admin` | 管理台密码，明文配置且无强度限制 |
 | `NOAUTH` | `false` | 设置为 `true`、`1`、`yes` 或 `on` 时关闭管理台登录 |
 | `LLMPROXY_CAPTURE_MAX_BYTES` | `33554432` | 单个请求体或响应体最多记录的字节数；超出后仍继续转发 |
-| `LLMPROXY_RETENTION_DAYS` | `7` | 记录保留天数；`0` 表示不按天数清理 |
-| `LLMPROXY_MAX_REQUESTS_PER_PROJECT` | `10000` | 每项目最多记录数；`0` 表示不按条数清理 |
+| `LLMPROXY_RETENTION_DAYS` | `0` | 记录保留天数；`0` 表示不按天数清理 |
+| `LLMPROXY_MAX_REQUESTS_PER_PROJECT` | `0` | 每项目最多记录数；`0` 表示不按条数清理 |
 | `LLMPROXY_UPSTREAM_HEADER_TIMEOUT` | `5m` | 等待上游响应头的最长时间 |
 
 服务首次启动会在数据目录生成：
